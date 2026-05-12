@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { apiGet } from "@/lib/api";
+import { apiGet, nxGet } from "@/lib/api";
 import { InstanceStatus } from "@/lib/types";
 
 export default function DashboardPage() {
@@ -16,8 +16,16 @@ export default function DashboardPage() {
 
   async function loadStatus() {
     try {
-      const data = await apiGet<InstanceStatus>("/api/status");
-      setStatus(data);
+      const [flask, db] = await Promise.all([
+        apiGet<{ state: string; broadcast_active: boolean }>("/api/status").catch(() => ({ state: "error", broadcast_active: false })),
+        nxGet<{ stats: InstanceStatus["stats"]; unread_count: number }>("/api/status").catch(() => ({ stats: { total: 0, sent: 0, not_found: 0, failed: 0, success_rate: 0 }, unread_count: 0 })),
+      ]);
+      setStatus({
+        state: flask.state,
+        broadcast_active: flask.broadcast_active,
+        stats: db.stats,
+        unread_count: db.unread_count,
+      });
     } catch {
       /* offline */
     } finally {

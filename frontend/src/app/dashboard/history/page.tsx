@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { apiGet } from "@/lib/api";
+import { nxGet } from "@/lib/api";
 import { Broadcast, Recipient } from "@/lib/types";
 
 export default function HistoryPage() {
@@ -15,7 +15,7 @@ export default function HistoryPage() {
   async function loadHistory() {
     setLoading(true);
     try {
-      const data = await apiGet<Broadcast[]>("/api/history");
+      const data = await nxGet<Broadcast[]>("/api/broadcasts");
       setBroadcasts(Array.isArray(data) ? data : []);
     } catch { /* */ } finally { setLoading(false); }
   }
@@ -23,7 +23,7 @@ export default function HistoryPage() {
   async function showDetails(b: Broadcast) {
     setSelected(b);
     try {
-      const data = await apiGet<Recipient[]>(`/api/history/${b.id}`);
+      const data = await nxGet<Recipient[]>(`/api/broadcasts/${b.id}`);
       setRecipients(Array.isArray(data) ? data : []);
     } catch { /* */ }
   }

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { apiGet, apiPost, apiDelete } from "@/lib/api";
+import { nxGet, nxPost, nxDelete } from "@/lib/api";
 import { Template } from "@/lib/types";
 
 export default function TemplatesPage() {
@@ -16,7 +16,7 @@ export default function TemplatesPage() {
   async function loadTemplates() {
     setLoading(true);
     try {
-      const data = await apiGet<Template[]>("/api/templates");
+      const data = await nxGet<Template[]>("/api/templates");
       setTemplates(Array.isArray(data) ? data : []);
     } catch { /* */ } finally { setLoading(false); }
   }
@@ -25,7 +25,7 @@ export default function TemplatesPage() {
     if (!name.trim() || !text.trim()) return;
     setCreating(true);
     try {
-      await apiPost("/api/templates", { name: name.trim(), text: text.trim() });
+      await nxPost("/api/templates", { name: name.trim(), text: text.trim() });
       setName("");
       setText("");
       loadTemplates();
@@ -34,7 +34,7 @@ export default function TemplatesPage() {
 
   async function deleteTemplate(id: number) {
     try {
-      await apiDelete(`/api/templates/${id}`);
+      await nxDelete(`/api/templates/${id}`);
       setTemplates((t) => t.filter((x) => x.id !== id));
     } catch { /* */ }
   }

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { apiGet, apiPost, apiUpload, apiSSE } from "@/lib/api";
+import { apiGet, apiPost, apiUpload, apiSSE, nxGet } from "@/lib/api";
 import { Template } from "@/lib/types";
 
 interface ProgressEvent {
@@ -24,7 +24,7 @@ export default function BroadcastPage() {
   const [templates, setTemplates] = useState<Template[]>([]);
 
   useEffect(() => {
-    apiGet<Template[]>("/api/templates").then(res => {
+    nxGet<Template[]>("/api/templates").then(res => {
       setTemplates(Array.isArray(res) ? res : []);
     }).catch(() => {});
   }, []);

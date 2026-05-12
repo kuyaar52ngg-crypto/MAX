@@ -6,12 +6,18 @@
     "dev": "next dev --turbopack",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "postinstall": "prisma generate"
   },
   "dependencies": {
+    "@prisma/adapter-pg": "^7.4.2",
+    "@prisma/client": "^7.4.2",
     "@supabase/ssr": "latest",
     "@supabase/supabase-js": "latest",
+    "dotenv": "^17.4.2",
     "next": "latest",
+    "pg": "^8.20.0",
+    "prisma": "^7.4.2",
     "react": "latest",
     "react-dom": "latest"
   },
@@ -19,6 +25,7 @@
     "@eslint/eslintrc": "latest",
     "@tailwindcss/postcss": "latest",
     "@types/node": "latest",
+    "@types/pg": "^8.18.0",
     "@types/react": "latest",
     "@types/react-dom": "latest",
     "eslint": "latest",

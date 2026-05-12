@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { apiGet, apiPost } from "@/lib/api";
+import { apiGet, apiPost, nxGet, nxDelete } from "@/lib/api";
 import { Chat, GroupData, GroupParticipant } from "@/lib/types";
 
 export default function GroupsPage() {
@@ -32,7 +32,7 @@ export default function GroupsPage() {
     try {
       const [allChats, localGroups] = await Promise.all([
         apiGet<Chat[]>("/api/chats").catch(() => []),
-        apiGet<any[]>("/api/groups").catch(() => []),
+        nxGet<any[]>("/api/groups").catch(() => []),
       ]);
 
       // Преобразуем локальные группы в формат Chat
@@ -298,7 +298,7 @@ export default function GroupsPage() {
                 <button
                   onClick={async () => {
                     if (confirm("Выйти из группы и полностью удалить её из всех списков?")) {
-                      await apiPost("/api/groups/delete", { groupId: activeGroup.chatId });
+                      await nxDelete(`/api/groups/${activeGroup.chatId}`);
                       setActiveGroup(null);
                       loadGroups();
                     }

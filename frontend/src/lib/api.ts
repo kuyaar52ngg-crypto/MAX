@@ -1,5 +1,7 @@
 /**
- * API client for Flask backend.
+ * API clients:
+ * - apiGet / apiPost / apiDelete / apiUpload / apiSSE → Flask backend (GREEN-API)
+ * - nxGet / nxPost / nxDelete → Next.js API routes (Prisma / DB)
  * All requests include Supabase JWT for authentication.
  */
 
@@ -7,7 +9,7 @@ import { createClient } from "@/lib/supabase/client";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000";
 
-// Cache auth headers for up to 60 seconds to avoid calling Supabase on every request
+// Cache auth headers for up to 60 seconds
 let _cachedHeaders: HeadersInit | null = null;
 let _cacheExpiry = 0;
 
@@ -26,14 +28,15 @@ async function getAuthHeaders(): Promise<HeadersInit> {
   return headers;
 }
 
-/** Drops the JWT header cache so the next request re-reads the session. */
+/** Drops the JWT header cache. */
 export function invalidateAuthCache() {
   _cachedHeaders = null;
   _cacheExpiry = 0;
 }
 
-/** Alias kept for callers that used to clear all credentials on logout. */
 export const clearAllCredentials = invalidateAuthCache;
+
+// ── Flask (GREEN-API) ──────────────────────────────────────────────────────
 
 export async function apiGet<T>(path: string): Promise<T> {
   const headers = await getAuthHeaders();
@@ -91,9 +94,6 @@ export async function apiUpload<T>(path: string, formData: FormData): Promise<T>
   return res.json();
 }
 
-/**
- * SSE stream helper — connects to an SSE endpoint and calls onMessage for each event.
- */
 export function apiSSE(
   path: string,
   onMessage: (data: Record<string, unknown>) => void,
@@ -113,4 +113,43 @@ export function apiSSE(
     source.close();
   };
   return () => source.close();
+}
+
+// ── Next.js API routes (Prisma / DB) ─────────────────────────────────────
+
+export async function nxGet<T>(path: string): Promise<T> {
+  const headers = await getAuthHeaders();
+  const res = await fetch(path, { headers });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || res.statusText);
+  }
+  return res.json();
+}
+
+export async function nxPost<T>(path: string, body?: unknown): Promise<T> {
+  const headers = await getAuthHeaders();
+  const res = await fetch(path, {
+    method: "POST",
+    headers,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || res.statusText);
+  }
+  return res.json();
+}
+
+export async function nxDelete<T>(path: string): Promise<T> {
+  const headers = await getAuthHeaders();
+  const res = await fetch(path, {
+    method: "DELETE",
+    headers,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || res.statusText);
+  }
+  return res.json();
 }
