@@ -3,14 +3,11 @@
 -- Run this in your Supabase SQL Editor (https://supabase.com/dashboard)
 -- ═══════════════════════════════════════════════════════════════════════════════
 
--- ── Profiles (per-user Green API credentials) ──────────────────────────────
+-- ── Profiles (user info, no Green API credentials — they live in .env) ──────
 CREATE TABLE IF NOT EXISTS public.profiles (
   id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
   user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL UNIQUE,
   display_name TEXT,
-  green_api_id TEXT,
-  green_api_token TEXT,
-  green_api_url TEXT DEFAULT 'https://api.green-api.com',
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
@@ -73,7 +70,6 @@ CREATE TABLE IF NOT EXISTS public.delivery_statuses (
 
 ALTER TABLE public.delivery_statuses ENABLE ROW LEVEL SECURITY;
 
--- Public read for delivery statuses (linked through recipients)
 CREATE POLICY "Authenticated users read delivery statuses" ON public.delivery_statuses
   FOR SELECT USING (auth.role() = 'authenticated');
 CREATE POLICY "Authenticated users write delivery statuses" ON public.delivery_statuses
@@ -99,7 +95,7 @@ CREATE POLICY "Users delete own templates" ON public.templates FOR DELETE USING 
 -- ── Incoming Messages ──────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS public.incoming (
   id BIGSERIAL PRIMARY KEY,
-  user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
+  user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
   sender TEXT NOT NULL,
   sender_name TEXT,
   message TEXT,
@@ -111,9 +107,9 @@ CREATE TABLE IF NOT EXISTS public.incoming (
 
 ALTER TABLE public.incoming ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY "Users see own incoming" ON public.incoming FOR SELECT USING (auth.uid() = user_id);
-CREATE POLICY "Users create own incoming" ON public.incoming FOR INSERT WITH CHECK (auth.uid() = user_id);
-CREATE POLICY "Users update own incoming" ON public.incoming FOR UPDATE USING (auth.uid() = user_id);
+CREATE POLICY "Users see own incoming" ON public.incoming FOR SELECT USING (auth.uid() = user_id OR user_id IS NULL);
+CREATE POLICY "Users create own incoming" ON public.incoming FOR INSERT WITH CHECK (auth.uid() = user_id OR user_id IS NULL);
+CREATE POLICY "Users update own incoming" ON public.incoming FOR UPDATE USING (auth.uid() = user_id OR user_id IS NULL);
 
 -- ── Groups ─────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS public.groups (
@@ -121,7 +117,8 @@ CREATE TABLE IF NOT EXISTS public.groups (
   user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
   group_id TEXT NOT NULL,
   name TEXT,
-  created_at TIMESTAMPTZ DEFAULT now()
+  created_at TIMESTAMPTZ DEFAULT now(),
+  UNIQUE(user_id, group_id)
 );
 
 ALTER TABLE public.groups ENABLE ROW LEVEL SECURITY;
@@ -129,6 +126,20 @@ ALTER TABLE public.groups ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "Users see own groups" ON public.groups FOR SELECT USING (auth.uid() = user_id);
 CREATE POLICY "Users create own groups" ON public.groups FOR INSERT WITH CHECK (auth.uid() = user_id);
 CREATE POLICY "Users delete own groups" ON public.groups FOR DELETE USING (auth.uid() = user_id);
+
+-- ── Hidden Groups ───────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS public.hidden_groups (
+  id BIGSERIAL PRIMARY KEY,
+  user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
+  group_id TEXT NOT NULL,
+  UNIQUE(user_id, group_id)
+);
+
+ALTER TABLE public.hidden_groups ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Users see own hidden" ON public.hidden_groups FOR SELECT USING (auth.uid() = user_id);
+CREATE POLICY "Users hide own groups" ON public.hidden_groups FOR INSERT WITH CHECK (auth.uid() = user_id);
+CREATE POLICY "Users unhide own groups" ON public.hidden_groups FOR DELETE USING (auth.uid() = user_id);
 
 -- ── Contacts Cache ─────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS public.contacts_cache (

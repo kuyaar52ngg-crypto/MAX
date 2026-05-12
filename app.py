@@ -6,13 +6,15 @@ import threading
 import logging
 import time
 import sys
+from functools import wraps
 
-from flask import Flask, request, jsonify, Response, stream_with_context
+import requests
+from flask import Flask, request, jsonify, Response, stream_with_context, g
 from flask_cors import CORS
 from dotenv import load_dotenv
 
 from bot import MaxBot
-import db
+import supabase_db as db
 
 def get_data_path():
     if getattr(sys, 'frozen', False):
@@ -47,8 +49,6 @@ CORS(app, resources={r"/api/*": {
 UPLOAD_FOLDER = os.path.join(get_data_path(), 'uploads')
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-db.init_db()
-
 ID_INSTANCE  = os.getenv('ID_INSTANCE', '')
 API_TOKEN    = os.getenv('API_TOKEN_INSTANCE', '')
 GREEN_API_URL = os.getenv('GREEN_API_URL', 'https://api.green-api.com')
@@ -56,6 +56,46 @@ FLASK_PORT   = int(os.getenv('FLASK_PORT', 5000))
 
 bot = MaxBot(ID_INSTANCE, API_TOKEN)
 bot.base_url = f"{GREEN_API_URL}/waInstance{ID_INSTANCE}"
+
+# ── Supabase Auth helpers ─────────────────────────────────────────────────
+SUPABASE_URL     = os.getenv('SUPABASE_URL', '')
+SUPABASE_ANON_KEY = os.getenv('SUPABASE_ANON_KEY', '')
+_token_cache: dict[str, dict] = {}
+
+
+def get_current_user() -> str | None:
+    auth_header = request.headers.get('Authorization', '')
+    if not auth_header.startswith('Bearer '):
+        return None
+    token = auth_header[7:]
+    now = time.time()
+    cached = _token_cache.get(token)
+    if cached and cached['expires'] > now:
+        return cached['user_id']
+    try:
+        resp = requests.get(
+            f'{SUPABASE_URL}/auth/v1/user',
+            headers={'apikey': SUPABASE_ANON_KEY, 'Authorization': f'Bearer {token}'},
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            user_id = resp.json().get('id')
+            _token_cache[token] = {'user_id': user_id, 'expires': now + 60}
+            return user_id
+    except Exception:
+        pass
+    return None
+
+
+def require_auth(f):
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        user_id = get_current_user()
+        if not user_id:
+            return jsonify({'error': 'Unauthorized'}), 401
+        g.user_id = user_id
+        return f(*args, **kwargs)
+    return wrapper
 
 
 # ── SSE-очереди ───────────────────────────────────────────────────────────
@@ -83,12 +123,13 @@ def sse_push(data: dict):
 
 # ── Статус инстанса ────────────────────────────────────────────────────────
 @app.route('/api/status')
+@require_auth
 def api_status():
     state = bot.get_state()
-    stats = db.get_total_stats()
+    stats = db.get_total_stats(g.user_id)
     sent  = stats['sent']
     total = stats['total']
-    unread = db.get_unread_count()
+    unread = db.get_unread_count(g.user_id)
     return jsonify({
         'state': state,
         'stats': {
@@ -150,12 +191,14 @@ def _save_to_env(key: str, value: str):
 
 # ── QR-код ────────────────────────────────────────────────────────────────
 @app.route('/api/qr')
+@require_auth
 def api_qr():
     return jsonify(bot.get_qr_code())
 
 
 # ── Настройки аккаунта ────────────────────────────────────────────────────
 @app.route('/api/account-settings')
+@require_auth
 def api_account_settings():
     result = bot.get_account_settings()
     return jsonify(result or {})
@@ -163,6 +206,7 @@ def api_account_settings():
 
 # ── Перезапуск инстанса ───────────────────────────────────────────────────
 @app.route('/api/reboot', methods=['POST'])
+@require_auth
 def api_reboot():
     ok = bot.reboot_instance()
     return jsonify({'success': ok})
@@ -170,6 +214,7 @@ def api_reboot():
 
 # ── Проверка одного номера ─────────────────────────────────────────────────
 @app.route('/api/check-contact', methods=['POST'])
+@require_auth
 def api_check_contact():
     data  = request.get_json(force=True)
     phone = data.get('phone', '').strip()
@@ -181,6 +226,7 @@ def api_check_contact():
 
 # ── Загрузка CSV ──────────────────────────────────────────────────────────
 @app.route('/api/upload-contacts', methods=['POST'])
+@require_auth
 def api_upload_contacts():
     if 'file' not in request.files:
         return jsonify({'error': 'no file'}), 400
@@ -202,6 +248,7 @@ def api_upload_contacts():
 
 # ── Рассылка ──────────────────────────────────────────────────────────────
 @app.route('/api/broadcast', methods=['POST'])
+@require_auth
 def api_broadcast():
     global _broadcast_active
     if _broadcast_active:
@@ -221,7 +268,7 @@ def api_broadcast():
         return jsonify({'error': 'Укажите сообщение или файл'}), 400
 
     broadcast_id = db.create_broadcast(
-        message, len(phones),
+        g.user_id, message, len(phones),
         file_url=file_url, file_name=file_name, use_typing=use_typing
     )
     counters = {'sent': 0, 'not_found': 0, 'failed': 0}
@@ -291,45 +338,52 @@ def api_broadcast_progress():
 
 # ── История рассылок ───────────────────────────────────────────────────────
 @app.route('/api/history')
+@require_auth
 def api_history():
-    return jsonify(db.get_broadcasts())
+    return jsonify(db.get_broadcasts(g.user_id))
 
 
 @app.route('/api/history/<int:broadcast_id>')
+@require_auth
 def api_history_detail(broadcast_id):
     return jsonify(db.get_broadcast_recipients(broadcast_id))
 
 
 @app.route('/api/delivery-statuses/<int:broadcast_id>')
+@require_auth
 def api_delivery_statuses(broadcast_id):
     return jsonify(db.get_delivery_statuses_for_broadcast(broadcast_id))
 
 
 # ── Шаблоны ───────────────────────────────────────────────────────────────
 @app.route('/api/templates', methods=['GET'])
+@require_auth
 def api_templates_get():
-    return jsonify(db.get_templates())
+    return jsonify(db.get_templates(g.user_id))
 
 
 @app.route('/api/templates', methods=['POST'])
+@require_auth
 def api_templates_create():
     data = request.get_json(force=True)
     name = data.get('name', '').strip()
     text = data.get('text', '').strip()
     if not name or not text:
         return jsonify({'error': 'name and text required'}), 400
-    tid = db.create_template(name, text)
+    tid = db.create_template(g.user_id, name, text)
     return jsonify({'id': tid, 'name': name, 'text': text}), 201
 
 
 @app.route('/api/templates/<int:tid>', methods=['DELETE'])
+@require_auth
 def api_templates_delete(tid):
-    db.delete_template(tid)
+    db.delete_template(g.user_id, tid)
     return jsonify({'deleted': tid})
 
 
 # ── Webhook ───────────────────────────────────────────────────────────────
 @app.route('/api/setup-webhook', methods=['POST'])
+@require_auth
 def api_setup_webhook():
     data = request.get_json(force=True)
     url  = data.get('url', '').strip()
@@ -401,35 +455,40 @@ def webhook():
 
 # ── Входящие сообщения ────────────────────────────────────────────────────
 @app.route('/api/incoming')
+@require_auth
 def api_incoming():
-    return jsonify(db.get_incoming())
+    return jsonify(db.get_incoming(g.user_id))
 
 
 @app.route('/api/incoming/<int:msg_id>/read', methods=['POST'])
+@require_auth
 def api_mark_read(msg_id):
-    db.mark_incoming_read(msg_id)
+    db.mark_incoming_read(g.user_id, msg_id)
     return jsonify({'marked': msg_id})
 
 
 # ── Чаты и контакты ───────────────────────────────────────────────────────
 @app.route('/api/chats')
+@require_auth
 def api_chats():
     chats = bot.get_chats()
     if not chats:
         return jsonify([])
     # Фильтруем скрытые группы
-    hidden = db.get_hidden_groups()
+    hidden = db.get_hidden_groups(g.user_id)
     filtered = [c for c in chats if c.get('chatId') not in hidden]
     return jsonify(filtered)
 
 
 @app.route('/api/contacts')
+@require_auth
 def api_contacts():
     contacts = bot.get_contacts()
     return jsonify(contacts)
 
 
 @app.route('/api/contact-info', methods=['POST'])
+@require_auth
 def api_contact_info():
     data    = request.get_json(force=True)
     chat_id = data.get('chatId', '').strip()
@@ -440,6 +499,7 @@ def api_contact_info():
 
 
 @app.route('/api/chat-history', methods=['POST'])
+@require_auth
 def api_chat_history():
     data    = request.get_json(force=True)
     chat_id = data.get('chatId', '').strip()
@@ -451,6 +511,7 @@ def api_chat_history():
 
 
 @app.route('/api/read-chat', methods=['POST'])
+@require_auth
 def api_read_chat():
     data    = request.get_json(force=True)
     chat_id = data.get('chatId', '').strip()
@@ -462,6 +523,7 @@ def api_read_chat():
 
 # ── Отправка текстового сообщения ─────────────────────────────────────────
 @app.route('/api/send-message', methods=['POST'])
+@require_auth
 def api_send_message():
     data    = request.get_json(force=True)
     chat_id = data.get('chatId', '').strip()
@@ -476,6 +538,7 @@ def api_send_message():
 
 # ── Отправка файла ────────────────────────────────────────────────────────
 @app.route('/api/send-file', methods=['POST'])
+@require_auth
 def api_send_file():
     chat_id = request.form.get('chatId', '').strip()
     caption = request.form.get('caption', '').strip()
@@ -508,6 +571,7 @@ def api_send_file():
 
 # ── Отправка геолокации ───────────────────────────────────────────────────
 @app.route('/api/send-location', methods=['POST'])
+@require_auth
 def api_send_location():
     data    = request.get_json(force=True)
     chat_id = data.get('chatId', '').strip()
@@ -527,6 +591,7 @@ def api_send_location():
 
 # ── Отправка контакта ─────────────────────────────────────────────────────
 @app.route('/api/send-contact', methods=['POST'])
+@require_auth
 def api_send_contact():
     data          = request.get_json(force=True)
     chat_id       = data.get('chatId', '').strip()
@@ -544,12 +609,14 @@ def api_send_contact():
 
 # ── Queue ─────────────────────────────────────────────────────────────────
 @app.route('/api/queue')
+@require_auth
 def api_queue():
     size = bot.get_queue_size()
     return jsonify({'size': size, 'status': 'busy' if size > 0 else 'idle'})
 
 
 @app.route('/api/queue/clear', methods=['POST'])
+@require_auth
 def api_queue_clear():
     result  = bot.clear_queue()
     cleared = bool(result and result.get('clearMessagesQueue'))
@@ -558,6 +625,7 @@ def api_queue_clear():
 
 # ── Массовая проверка номеров ──────────────────────────────────────────────
 @app.route('/api/check-contacts-bulk', methods=['POST'])
+@require_auth
 def api_check_contacts_bulk():
     global _check_active
     if _check_active:
@@ -650,7 +718,7 @@ def api_create_group():
     if not group_id:
         return jsonify({'error': 'Не удалось создать группу'}), 500
 
-    db.save_group(group_id, name)
+    db.save_group(g.user_id, group_id, name)
 
     result = {
         'group_id': group_id, 'name': name,
@@ -666,6 +734,7 @@ def api_create_group():
 
 
 @app.route('/api/group-details', methods=['POST'])
+@require_auth
 def api_group_details():
     data     = request.get_json(force=True)
     group_id = data.get('groupId', '').strip()
@@ -676,6 +745,7 @@ def api_group_details():
 
 
 @app.route('/api/add-participant', methods=['POST'])
+@require_auth
 def api_add_participant():
     data        = request.get_json(force=True)
     group_id    = data.get('groupId', '').strip()
@@ -687,6 +757,7 @@ def api_add_participant():
 
 
 @app.route('/api/remove-participant', methods=['POST'])
+@require_auth
 def api_remove_participant():
     data        = request.get_json(force=True)
     group_id    = data.get('groupId', '').strip()
@@ -698,6 +769,7 @@ def api_remove_participant():
 
 
 @app.route('/api/set-admin', methods=['POST'])
+@require_auth
 def api_set_admin():
     data        = request.get_json(force=True)
     group_id    = data.get('groupId', '').strip()
@@ -709,6 +781,7 @@ def api_set_admin():
 
 
 @app.route('/api/remove-admin', methods=['POST'])
+@require_auth
 def api_remove_admin():
     data        = request.get_json(force=True)
     group_id    = data.get('groupId', '').strip()
@@ -720,6 +793,7 @@ def api_remove_admin():
 
 
 @app.route('/api/leave-group', methods=['POST'])
+@require_auth
 def api_leave_group():
     data     = request.get_json(force=True)
     group_id = data.get('groupId', '').strip()
@@ -730,6 +804,7 @@ def api_leave_group():
 
 
 @app.route('/api/update-group-name', methods=['POST'])
+@require_auth
 def api_update_group_name():
     data       = request.get_json(force=True)
     group_id   = data.get('groupId', '').strip()
@@ -741,6 +816,7 @@ def api_update_group_name():
 
 
 @app.route('/api/set-group-picture', methods=['POST'])
+@require_auth
 def api_set_group_picture():
     group_id = request.form.get('groupId', '').strip()
     if not group_id:
@@ -763,22 +839,24 @@ def api_set_group_picture():
 
 # ── Управление группами ───────────────────────────────────────────────────
 @app.route('/api/groups')
+@require_auth
 def api_groups():
-    groups = db.get_groups()
-    hidden = db.get_hidden_groups()
+    groups = db.get_groups(g.user_id)
+    hidden = db.get_hidden_groups(g.user_id)
     filtered = [g for g in groups if g.get('group_id') not in hidden]
     return jsonify(filtered)
 
 @app.route('/api/groups/delete', methods=['POST'])
+@require_auth
 def api_delete_group():
     data = request.get_json(force=True)
     group_id = data.get('groupId')
     if not group_id:
         return jsonify({'error': 'groupId is required'}), 400
-    
+
     logger.info(f"Запрос на удаление группы: {group_id}")
-    db.delete_group(group_id)
-    db.hide_group(group_id)
+    db.delete_group(g.user_id, group_id)
+    db.hide_group(g.user_id, group_id)
     # Пытаемся также выйти из группы, если мы в ней состоим
     try:
         bot.leave_group(group_id)
@@ -788,12 +866,14 @@ def api_delete_group():
 
 
 @app.route('/api/group/<path:group_id>/data')
+@require_auth
 def api_group_data(group_id):
     data = bot.get_group_data(group_id)
     return jsonify(data or {})
 
 
 @app.route('/api/group/<path:group_id>/add', methods=['POST'])
+@require_auth
 def api_group_add(group_id):
     data  = request.get_json(force=True)
     phone = data.get('phone', '').strip()
@@ -807,10 +887,11 @@ def api_group_add(group_id):
 
 
 @app.route('/api/group/<path:group_id>/add-bulk', methods=['POST'])
+@require_auth
 def api_group_add_bulk(group_id):
     data = request.get_json(force=True)
     phones_input = data.get('phones', [])
-    
+
     # Парсинг номеров (если пришла строка, разобьем её)
     phones = []
     if isinstance(phones_input, str):
@@ -827,11 +908,12 @@ def api_group_add_bulk(group_id):
             results.append({'phone': phone, 'success': bool(ok)})
         else:
             results.append({'phone': phone, 'success': False, 'error': 'Not found'})
-            
+
     return jsonify({'results': results})
 
 
 @app.route('/api/group/<path:group_id>/remove', methods=['POST'])
+@require_auth
 def api_group_remove(group_id):
     data    = request.get_json(force=True)
     chat_id = data.get('chatId', '').strip()
@@ -842,6 +924,7 @@ def api_group_remove(group_id):
 
 
 @app.route('/api/group/<path:group_id>/admin', methods=['POST'])
+@require_auth
 def api_group_admin(group_id):
     data    = request.get_json(force=True)
     chat_id = data.get('chatId', '').strip()
@@ -856,17 +939,19 @@ def api_group_admin(group_id):
 
 
 @app.route('/api/group/<path:group_id>/leave', methods=['POST'])
+@require_auth
 def api_group_leave(group_id):
     logger.info(f"Запрос на выход из группы: {group_id}")
     result = bot.leave_group(group_id)
     # В любом случае удаляем и скрываем локально
-    db.delete_group(group_id)
-    db.hide_group(group_id)
+    db.delete_group(g.user_id, group_id)
+    db.hide_group(g.user_id, group_id)
     return jsonify({'success': True})
 
 
 # ── Polling уведомлений ───────────────────────────────────────────────────
 @app.route('/api/poll-notifications', methods=['POST'])
+@require_auth
 def api_poll_notifications():
     """Ручной polling: получить все накопленные уведомления из очереди GREEN-API."""
     notifications = bot.poll_all_notifications()
@@ -882,7 +967,7 @@ def api_poll_notifications():
             text = ''
             if msg_type == 'textMessage':
                 text = msg_data.get('textMessageData', {}).get('textMessage', '')
-            db.add_incoming(sender, text, msg_type, sender_name=sender_name)
+            db.add_incoming(g.user_id, sender, text, msg_type, sender_name=sender_name)
             processed += 1
         elif type_wh == 'outgoingMessageStatus':
             msg_data = body.get('messageData', {})
@@ -896,6 +981,7 @@ def api_poll_notifications():
 
 # ── Contacts Enrich (имена + аватары) ──────────────────────────────────────
 @app.route('/api/contacts/enrich', methods=['POST'])
+@require_auth
 def contacts_enrich():
     """
     POST { "chatIds": ["79001234567@c.us", ...] }
@@ -911,7 +997,7 @@ def contacts_enrich():
     now           = int(time.time())
 
     # Получить из кэша
-    cached = db.get_contacts_cache(chat_ids)
+    cached = db.get_contacts_cache(g.user_id, chat_ids)
 
     result = {}
     to_fetch = []
@@ -931,7 +1017,7 @@ def contacts_enrich():
             name       = (info.get('name') or info.get('contactName') or
                           info.get('pushname') or '').strip() or None
             avatar_url = info.get('avatar') or None
-            db.upsert_contact_cache(cid, name=name, avatar_url=avatar_url)
+            db.upsert_contact_cache(g.user_id, cid, name=name, avatar_url=avatar_url)
             result[cid] = {'name': name, 'avatar_url': avatar_url}
         except Exception as e:
             logger.debug(f"enrich {cid}: {e}")
