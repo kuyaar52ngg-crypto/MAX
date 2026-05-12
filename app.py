@@ -60,7 +60,7 @@ CORS(app, resources={r"/api/*": {
 UPLOAD_FOLDER = os.path.join(get_data_path(), 'uploads')
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-FLASK_PORT = int(os.getenv('FLASK_PORT', 5000))
+FLASK_PORT = int(os.getenv('PORT') or os.getenv('FLASK_PORT', 5000))
 FLASK_DEBUG = os.getenv('FLASK_DEBUG', '').lower() in ('1', 'true', 'yes', 'on')
 
 

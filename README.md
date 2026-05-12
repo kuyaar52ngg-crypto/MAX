@@ -210,6 +210,86 @@ https://imugyplwampsqwsxhjgw.supabase.co/auth/v1/callback
 
 ---
 
+## Railway деплой
+
+Railway можно использовать для двух сервисов из одного репозитория:
+
+- `max-backend` — Flask backend из корня репозитория.
+- `max-frontend` — Next.js frontend из папки `frontend`.
+
+### 1. Backend service
+
+1. Railway → **New Project → Deploy from GitHub repo**.
+2. Выберите репозиторий `kuyaar52ngg-crypto/MAX`.
+3. Для backend оставьте **Root Directory** пустым / `/`.
+4. В **Settings → Start Command** укажите:
+
+```bash
+gunicorn -w 1 --threads 8 -b 0.0.0.0:$PORT app:app --timeout 300
+```
+
+5. В **Variables** добавьте:
+
+```env
+FLASK_DEBUG=0
+FRONTEND_URL=https://your-frontend.up.railway.app
+```
+
+После первого деплоя Railway выдаст backend domain вида `https://your-backend.up.railway.app`.
+
+### 2. Frontend service
+
+1. В том же Railway project нажмите **New → GitHub Repo** и выберите тот же репозиторий.
+2. В **Settings** укажите **Root Directory**: `frontend`.
+3. Build Command: `npm run build`.
+4. Start Command:
+
+```bash
+npm run start -- -H 0.0.0.0 -p $PORT
+```
+
+5. В **Variables** добавьте:
+
+```env
+NEXT_PUBLIC_SUPABASE_URL=https://imugyplwampsqwsxhjgw.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-public-key
+DATABASE_URL="postgresql://..."
+NEXT_PUBLIC_API_URL=https://your-backend.up.railway.app
+```
+
+После первого деплоя Railway выдаст frontend domain вида `https://your-frontend.up.railway.app`.
+
+### 3. Обновить CORS backend
+
+Когда frontend domain уже известен, вернитесь в backend service → **Variables** и поставьте:
+
+```env
+FRONTEND_URL=https://your-frontend.up.railway.app
+```
+
+Затем redeploy backend.
+
+### 4. Supabase Auth URLs
+
+В Supabase **Authentication → URL Configuration**:
+
+```text
+Site URL: https://your-frontend.up.railway.app
+Redirect URLs:
+https://your-frontend.up.railway.app/auth/callback
+http://localhost:3000/auth/callback
+```
+
+### 5. Google OAuth
+
+В Google Cloud OAuth Client оставьте Supabase callback:
+
+```text
+https://imugyplwampsqwsxhjgw.supabase.co/auth/v1/callback
+```
+
+---
+
 ## Vercel деплой frontend
 
 Vercel подходит для Next.js frontend. Flask backend (`app.py`) нужно держать отдельно: VPS, Render, Railway или другой публичный сервер. Без публичного backend URL разделы, которые обращаются к GREEN-API, не смогут выполнять Flask-запросы.
