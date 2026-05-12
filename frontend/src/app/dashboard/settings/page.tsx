@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { apiGet, apiPost } from "@/lib/api";
+import { apiGet, apiPost, nxGet, nxPost, invalidateCredentialsCache } from "@/lib/api";
 
 interface AccountSettings {
   phone?: string;
@@ -10,14 +10,54 @@ interface AccountSettings {
   stateInstance?: string;
 }
 
+interface GreenCredentials {
+  green_api_id: string;
+  green_api_token: string;
+  green_api_url: string;
+  has_credentials: boolean;
+}
+
 export default function SettingsPage() {
   const [settings, setSettings] = useState<AccountSettings | null>(null);
+  const [credentials, setCredentials] = useState<GreenCredentials>({
+    green_api_id: "",
+    green_api_token: "",
+    green_api_url: "https://api.green-api.com",
+    has_credentials: false,
+  });
   const [qrData, setQrData] = useState<string | null>(null);
   const [qrType, setQrType] = useState<string>("");
   const [webhookUrl, setWebhookUrl] = useState("");
   const [saving, setSaving] = useState(false);
+  const [savingCredentials, setSavingCredentials] = useState(false);
+  const [credentialsSaved, setCredentialsSaved] = useState(false);
+  const [credentialsError, setCredentialsError] = useState<string | null>(null);
 
-  useEffect(() => { loadSettings(); }, []);
+  useEffect(() => { loadCredentials(); loadSettings(); }, []);
+
+  async function loadCredentials() {
+    try {
+      const data = await nxGet<GreenCredentials>("/api/profile/credentials");
+      setCredentials(data);
+    } catch { /* */ }
+  }
+
+  async function saveCredentials() {
+    setSavingCredentials(true);
+    setCredentialsSaved(false);
+    setCredentialsError(null);
+    try {
+      const data = await nxPost<GreenCredentials>("/api/profile/credentials", credentials);
+      setCredentials(data);
+      invalidateCredentialsCache();
+      setCredentialsSaved(true);
+      await loadSettings();
+    } catch (err: unknown) {
+      setCredentialsError(err instanceof Error ? err.message : "Не удалось сохранить данные");
+    } finally {
+      setSavingCredentials(false);
+    }
+  }
 
   async function loadSettings() {
     try { setSettings(await apiGet<AccountSettings>("/api/account-settings")); } catch { /* */ }
@@ -48,6 +88,65 @@ export default function SettingsPage() {
       <div>
         <h1 className="text-2xl font-bold text-text">⚙️ Настройки</h1>
         <p className="text-text-muted text-sm mt-1">Управление инстансом и профилем</p>
+      </div>
+
+      {/* GREEN-API credentials */}
+      <div className="settings-section glass rounded-2xl p-6 space-y-4">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <h3 className="text-sm font-semibold text-text-secondary">🔑 GREEN-API данные</h3>
+            <p className="text-xs text-text-muted mt-1">Эти данные хранятся в Supabase отдельно для каждого пользователя</p>
+          </div>
+          {credentials.has_credentials && (
+            <span className="px-3 py-1 rounded-full bg-success-bg text-success text-xs">Настроено</span>
+          )}
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div>
+            <label className="block text-xs text-text-muted mb-1">ID Instance</label>
+            <input
+              type="text"
+              value={credentials.green_api_id}
+              onChange={(e) => setCredentials((c) => ({ ...c, green_api_id: e.target.value }))}
+              placeholder="1101000001"
+              className="w-full px-4 py-2.5 bg-bg/50 border border-border rounded-xl text-sm text-text placeholder:text-text-muted focus:outline-none focus:border-accent/50 transition-colors"
+            />
+          </div>
+          <div>
+            <label className="block text-xs text-text-muted mb-1">API Token Instance</label>
+            <input
+              type="password"
+              value={credentials.green_api_token}
+              onChange={(e) => setCredentials((c) => ({ ...c, green_api_token: e.target.value }))}
+              placeholder="your_api_token"
+              className="w-full px-4 py-2.5 bg-bg/50 border border-border rounded-xl text-sm text-text placeholder:text-text-muted focus:outline-none focus:border-accent/50 transition-colors"
+            />
+          </div>
+        </div>
+
+        <div>
+          <label className="block text-xs text-text-muted mb-1">GREEN API URL</label>
+          <input
+            type="url"
+            value={credentials.green_api_url}
+            onChange={(e) => setCredentials((c) => ({ ...c, green_api_url: e.target.value }))}
+            placeholder="https://api.green-api.com"
+            className="w-full px-4 py-2.5 bg-bg/50 border border-border rounded-xl text-sm text-text placeholder:text-text-muted focus:outline-none focus:border-accent/50 transition-colors"
+          />
+        </div>
+
+        <div className="flex items-center gap-3">
+          <button
+            onClick={saveCredentials}
+            disabled={savingCredentials || !credentials.green_api_id.trim() || !credentials.green_api_token.trim()}
+            className="px-5 py-2.5 bg-accent hover:bg-accent-hover text-white text-sm font-medium rounded-xl transition-all disabled:opacity-50 active:scale-95"
+          >
+            {savingCredentials ? "Сохранение..." : "Сохранить"}
+          </button>
+          {credentialsSaved && <span className="text-success text-sm">Сохранено</span>}
+          {credentialsError && <span className="text-error text-sm">{credentialsError}</span>}
+        </div>
       </div>
 
       {/* Instance status */}

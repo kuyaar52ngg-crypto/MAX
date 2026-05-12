@@ -2,16 +2,24 @@
  * API clients:
  * - apiGet / apiPost / apiDelete / apiUpload / apiSSE → Flask backend (GREEN-API)
  * - nxGet / nxPost / nxDelete → Next.js API routes (Prisma / DB)
- * All requests include Supabase JWT for authentication.
+ * Flask requests include per-user GREEN-API credentials loaded from Supabase/Postgres.
  */
 
 import { createClient } from "@/lib/supabase/client";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000";
 
-// Cache auth headers for up to 60 seconds
+type GreenCredentials = {
+  green_api_id: string;
+  green_api_token: string;
+  green_api_url: string;
+  has_credentials: boolean;
+};
+
 let _cachedHeaders: HeadersInit | null = null;
 let _cacheExpiry = 0;
+let _cachedCredentials: GreenCredentials | null = null;
+let _credentialsExpiry = 0;
 
 async function getAuthHeaders(): Promise<HeadersInit> {
   if (_cachedHeaders && Date.now() < _cacheExpiry) {
@@ -28,18 +36,61 @@ async function getAuthHeaders(): Promise<HeadersInit> {
   return headers;
 }
 
+async function getGreenCredentials(): Promise<GreenCredentials | null> {
+  if (_cachedCredentials && Date.now() < _credentialsExpiry) {
+    return _cachedCredentials;
+  }
+  const headers = await getAuthHeaders();
+  const res = await fetch("/api/profile/credentials", { headers });
+  if (!res.ok) {
+    _cachedCredentials = null;
+    _credentialsExpiry = 0;
+    return null;
+  }
+  const credentials = await res.json() as GreenCredentials;
+  _cachedCredentials = credentials;
+  _credentialsExpiry = Date.now() + 60_000;
+  return credentials;
+}
+
+async function getFlaskHeaders(json = true): Promise<HeadersInit> {
+  const authHeaders = await getAuthHeaders();
+  const headers: Record<string, string> = { ...(authHeaders as Record<string, string>) };
+  if (!json) {
+    delete headers["Content-Type"];
+  }
+
+  const credentials = await getGreenCredentials();
+  if (credentials?.green_api_id && credentials?.green_api_token) {
+    headers["X-Green-Api-Id"] = credentials.green_api_id;
+    headers["X-Green-Api-Token"] = credentials.green_api_token;
+    headers["X-Green-Api-Url"] = credentials.green_api_url || "https://api.green-api.com";
+  }
+
+  return headers;
+}
+
 /** Drops the JWT header cache. */
 export function invalidateAuthCache() {
   _cachedHeaders = null;
   _cacheExpiry = 0;
 }
 
-export const clearAllCredentials = invalidateAuthCache;
+/** Drops cached GREEN-API credentials so the next Flask request re-reads Supabase/Postgres. */
+export function invalidateCredentialsCache() {
+  _cachedCredentials = null;
+  _credentialsExpiry = 0;
+}
+
+export function clearAllCredentials() {
+  invalidateAuthCache();
+  invalidateCredentialsCache();
+}
 
 // ── Flask (GREEN-API) ──────────────────────────────────────────────────────
 
 export async function apiGet<T>(path: string): Promise<T> {
-  const headers = await getAuthHeaders();
+  const headers = await getFlaskHeaders();
   const res = await fetch(`${API_BASE}${path}`, { headers });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
@@ -49,7 +100,7 @@ export async function apiGet<T>(path: string): Promise<T> {
 }
 
 export async function apiPost<T>(path: string, body?: unknown): Promise<T> {
-  const headers = await getAuthHeaders();
+  const headers = await getFlaskHeaders();
   const res = await fetch(`${API_BASE}${path}`, {
     method: "POST",
     headers,
@@ -63,7 +114,7 @@ export async function apiPost<T>(path: string, body?: unknown): Promise<T> {
 }
 
 export async function apiDelete<T>(path: string): Promise<T> {
-  const headers = await getAuthHeaders();
+  const headers = await getFlaskHeaders();
   const res = await fetch(`${API_BASE}${path}`, {
     method: "DELETE",
     headers,
@@ -76,12 +127,7 @@ export async function apiDelete<T>(path: string): Promise<T> {
 }
 
 export async function apiUpload<T>(path: string, formData: FormData): Promise<T> {
-  const supabase = createClient();
-  const { data: { session } } = await supabase.auth.getSession();
-  const headers: HeadersInit = {};
-  if (session?.access_token) {
-    headers["Authorization"] = `Bearer ${session.access_token}`;
-  }
+  const headers = await getFlaskHeaders(false);
   const res = await fetch(`${API_BASE}${path}`, {
     method: "POST",
     headers,

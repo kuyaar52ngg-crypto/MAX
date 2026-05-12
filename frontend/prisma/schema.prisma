@@ -7,6 +7,19 @@ datasource db {
   provider = "postgresql"
 }
 
+
+model Profile {
+  id              String   @id @default(uuid()) @db.Uuid
+  user_id         String   @unique @db.Uuid
+  display_name    String?
+  green_api_id    String?
+  green_api_token String?
+  green_api_url   String   @default("https://api.green-api.com")
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
+  @@map("profiles")
+}
+
 model Broadcast {
   id         BigInt      @id @default(autoincrement())
   user_id    String      @db.Uuid
@@ -21,6 +34,7 @@ model Broadcast {
   file_name  String?
   use_typing Boolean     @default(false)
   recipients Recipient[]
+  @@map("broadcasts")
 }
 
 model Recipient {
@@ -31,6 +45,7 @@ model Recipient {
   message_id   String?
   sent_at      DateTime  @default(now())
   broadcast    Broadcast @relation(fields: [broadcast_id], references: [id])
+  @@map("recipients")
 }
 
 model Template {
@@ -39,6 +54,7 @@ model Template {
   name       String
   text       String
   created_at DateTime @default(now())
+  @@map("templates")
 }
 
 model Incoming {
@@ -51,6 +67,7 @@ model Incoming {
   file_url    String?
   received_at DateTime @default(now())
   is_read     Boolean  @default(false)
+  @@map("incoming")
 }
 
 model DeliveryStatus {
@@ -58,6 +75,7 @@ model DeliveryStatus {
   message_id String   @unique
   status     String   @default("sent")
   timestamp  DateTime @default(now())
+  @@map("delivery_statuses")
 }
 
 model Group {
@@ -68,6 +86,7 @@ model Group {
   created_at DateTime @default(now())
 
   @@unique([user_id, group_id])
+  @@map("groups")
 }
 
 model HiddenGroup {
@@ -76,6 +95,7 @@ model HiddenGroup {
   group_id String
 
   @@unique([user_id, group_id])
+  @@map("hidden_groups")
 }
 
 model ContactCache {
@@ -87,4 +107,5 @@ model ContactCache {
   updated_at DateTime @default(now())
 
   @@unique([user_id, chat_id])
+  @@map("contacts_cache")
 }

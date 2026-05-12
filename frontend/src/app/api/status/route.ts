@@ -1,5 +1,6 @@
-import { NextRequest, NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
+import { NextRequest } from "next/server";
+import { jsonResponse } from "@/lib/json";
+import { prisma, prismaRetry } from "@/lib/prisma";
 import { createClient } from "@/lib/supabase/server";
 
 export const dynamic = "force-dynamic";
@@ -9,12 +10,12 @@ export async function GET(req: NextRequest) {
     const supabase = await createClient();
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+      return jsonResponse({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const rows = await prisma.broadcast.findMany({
+    const rows = await prismaRetry(() => prisma.broadcast.findMany({
       where: { user_id: user.id, status: "done" },
-    });
+    }));
 
     let total = 0, sent = 0, not_found = 0, failed = 0;
     for (const r of rows) {
@@ -24,11 +25,11 @@ export async function GET(req: NextRequest) {
       failed += r.failed || 0;
     }
 
-    const unread = await prisma.incoming.count({
+    const unread = await prismaRetry(() => prisma.incoming.count({
       where: { user_id: user.id, is_read: false },
-    });
+    }));
 
-    return NextResponse.json({
+    return jsonResponse({
       stats: {
         total,
         sent,
@@ -40,6 +41,6 @@ export async function GET(req: NextRequest) {
     });
   } catch (error: any) {
     console.error("status GET error:", error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return jsonResponse({ error: error.message }, { status: 500 });
   }
 }

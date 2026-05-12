@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { apiGet, apiPost, apiUpload, apiSSE, nxGet } from "@/lib/api";
+import { apiPost, apiUpload, apiSSE, nxGet, nxPost } from "@/lib/api";
 import { Template } from "@/lib/types";
 
 interface ProgressEvent {
@@ -9,6 +9,11 @@ interface ProgressEvent {
   total: number;
   phone?: string;
   status?: string;
+  message_id?: string;
+  broadcast_id?: number;
+  sent?: number;
+  not_found?: number;
+  failed?: number;
   finished?: boolean;
 }
 
@@ -69,7 +74,14 @@ export default function BroadcastPage() {
     setProgress(null);
 
     try {
+      const broadcast = await nxPost<{ id: number }>("/api/broadcasts", {
+        message: message.trim(),
+        total: phones.length,
+        use_typing: useTyping,
+      });
+
       await apiPost("/api/broadcast", {
+        broadcast_id: broadcast.id,
         phones,
         message: message.trim(),
         delay,
@@ -82,8 +94,18 @@ export default function BroadcastPage() {
         setProgress(d);
         if (d.phone && d.status) {
           setResults((r) => [...r, { phone: d.phone!, status: d.status! }]);
+          nxPost(`/api/broadcasts/${broadcast.id}/recipients`, {
+            phone: d.phone,
+            status: d.status,
+            message_id: d.message_id,
+          }).catch(() => {});
         }
         if (d.finished) {
+          nxPost(`/api/broadcasts/${broadcast.id}/finish`, {
+            sent: d.sent || 0,
+            not_found: d.not_found || 0,
+            failed: d.failed || 0,
+          }).catch(() => {});
           setBroadcasting(false);
         }
       }, () => setBroadcasting(false));

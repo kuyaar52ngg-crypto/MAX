@@ -3,12 +3,16 @@
 -- Run this in your Supabase SQL Editor (https://supabase.com/dashboard)
 -- ═══════════════════════════════════════════════════════════════════════════════
 
--- ── Profiles (user info, no Green API credentials — they live in .env) ──────
+-- ── Profiles (per-user Green API credentials) ──────────────────────────────
 CREATE TABLE IF NOT EXISTS public.profiles (
   id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
   user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL UNIQUE,
   display_name TEXT,
-  created_at TIMESTAMPTZ DEFAULT now()
+  green_api_id TEXT,
+  green_api_token TEXT,
+  green_api_url TEXT NOT NULL DEFAULT 'https://api.green-api.com',
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
 );
 
 ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
@@ -16,6 +20,11 @@ ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "Users can view own profile"   ON public.profiles FOR SELECT USING (auth.uid() = user_id);
 CREATE POLICY "Users can insert own profile" ON public.profiles FOR INSERT WITH CHECK (auth.uid() = user_id);
 CREATE POLICY "Users can update own profile" ON public.profiles FOR UPDATE USING (auth.uid() = user_id);
+
+ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS green_api_id TEXT;
+ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS green_api_token TEXT;
+ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS green_api_url TEXT NOT NULL DEFAULT 'https://api.green-api.com';
+ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT now();
 
 -- ── Broadcasts ─────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS public.broadcasts (

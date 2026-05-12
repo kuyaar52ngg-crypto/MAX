@@ -1,5 +1,6 @@
-import { NextRequest, NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
+import { NextRequest } from "next/server";
+import { jsonResponse } from "@/lib/json";
+import { prisma, prismaRetry } from "@/lib/prisma";
 import { createClient } from "@/lib/supabase/server";
 
 export const dynamic = "force-dynamic";
@@ -12,18 +13,18 @@ export async function GET(
     const supabase = await createClient();
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+      return jsonResponse({ error: "Unauthorized" }, { status: 401 });
     }
 
     const { id } = await params;
     const broadcastId = BigInt(id);
 
-    const rows = await prisma.recipient.findMany({
+    const rows = await prismaRetry(() => prisma.recipient.findMany({
       where: { broadcast_id: broadcastId },
-    });
+    }));
     const mids = rows.map((r) => r.message_id).filter(Boolean) as string[];
     const dsRows = mids.length
-      ? await prisma.deliveryStatus.findMany({ where: { message_id: { in: mids } } })
+      ? await prismaRetry(() => prisma.deliveryStatus.findMany({ where: { message_id: { in: mids } } }))
       : [];
     const dsMap = new Map(dsRows.map((d) => [d.message_id, d]));
 
@@ -37,9 +38,9 @@ export async function GET(
       delivery_status: dsMap.get(r.message_id || "")?.status || "pending",
     }));
 
-    return NextResponse.json(result);
+    return jsonResponse(result);
   } catch (error: any) {
     console.error("broadcast recipients GET error:", error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return jsonResponse({ error: error.message }, { status: 500 });
   }
 }

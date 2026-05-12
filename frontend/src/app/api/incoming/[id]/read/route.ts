@@ -1,5 +1,6 @@
-import { NextRequest, NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
+import { NextRequest } from "next/server";
+import { jsonResponse } from "@/lib/json";
+import { prisma, prismaRetry } from "@/lib/prisma";
 import { createClient } from "@/lib/supabase/server";
 
 export const dynamic = "force-dynamic";
@@ -12,18 +13,18 @@ export async function POST(
     const supabase = await createClient();
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+      return jsonResponse({ error: "Unauthorized" }, { status: 401 });
     }
 
     const { id } = await params;
-    await prisma.incoming.update({
+    await prismaRetry(() => prisma.incoming.update({
       where: { id: BigInt(id), user_id: user.id },
       data: { is_read: true },
-    });
+    }));
 
-    return NextResponse.json({ marked: id });
+    return jsonResponse({ marked: id });
   } catch (error: any) {
     console.error("incoming read error:", error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return jsonResponse({ error: error.message }, { status: 500 });
   }
 }

@@ -6,15 +6,11 @@ import threading
 import logging
 import time
 import sys
-from functools import wraps
-
-import requests
-from flask import Flask, request, jsonify, Response, stream_with_context, g
+from flask import Flask, request, jsonify, Response, stream_with_context
 from flask_cors import CORS
 from dotenv import load_dotenv
 
 from bot import MaxBot
-import prisma_db as db
 
 def get_data_path():
     if getattr(sys, 'frozen', False):
@@ -40,7 +36,7 @@ CORS(app, resources={r"/api/*": {
         "http://127.0.0.1:3000", "http://127.0.0.1:3001",
         "http://localhost:5000",
     ],
-    "allow_headers": ["Content-Type", "Authorization"],
+    "allow_headers": ["Content-Type", "Authorization", "X-Green-Api-Id", "X-Green-Api-Token", "X-Green-Api-Url"],
     "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     "supports_credentials": True,
 }})
@@ -49,13 +45,27 @@ CORS(app, resources={r"/api/*": {
 UPLOAD_FOLDER = os.path.join(get_data_path(), 'uploads')
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-ID_INSTANCE  = os.getenv('ID_INSTANCE', '')
-API_TOKEN    = os.getenv('API_TOKEN_INSTANCE', '')
-GREEN_API_URL = os.getenv('GREEN_API_URL', 'https://api.green-api.com')
-FLASK_PORT   = int(os.getenv('FLASK_PORT', 5000))
+FLASK_PORT = int(os.getenv('FLASK_PORT', 5000))
 
-bot = MaxBot(ID_INSTANCE, API_TOKEN)
-bot.base_url = f"{GREEN_API_URL}/waInstance{ID_INSTANCE}"
+
+def current_bot() -> MaxBot:
+    id_instance = request.headers.get('X-Green-Api-Id', '').strip()
+    api_token = request.headers.get('X-Green-Api-Token', '').strip()
+    api_url = request.headers.get('X-Green-Api-Url', 'https://api.green-api.com').strip().rstrip('/') or 'https://api.green-api.com'
+    if not id_instance or not api_token:
+        raise ValueError('GREEN-API credentials are not configured')
+    bot = MaxBot(id_instance, api_token)
+    bot.base_url = f"{api_url}/waInstance{id_instance}"
+    return bot
+
+
+def credentials_error_response(exc: Exception):
+    return jsonify({'error': str(exc)}), 400
+
+
+@app.errorhandler(ValueError)
+def handle_value_error(exc: ValueError):
+    return credentials_error_response(exc)
 
 
 # ── SSE-очереди ───────────────────────────────────────────────────────────
@@ -84,75 +94,36 @@ def sse_push(data: dict):
 # ── Статус инстанса ────────────────────────────────────────────────────────
 @app.route('/api/status')
 def api_status():
-    state = bot.get_state()
+    try:
+        state = current_bot().get_state()
+    except ValueError as exc:
+        return credentials_error_response(exc)
     return jsonify({'state': state, 'broadcast_active': _broadcast_active})
 
 
 # ── Конфигурация инстанса ─────────────────────────────────────────────────
 @app.route('/api/configure', methods=['POST'])
 def api_configure():
-    """Принимает id_instance / api_token / api_url, перенастраивает бота и сохраняет в .env."""
-    global bot
-    data      = request.get_json(force=True)
-    id_inst   = data.get('id_instance', '').strip()
-    api_tok   = data.get('api_token', '').strip()
-    api_url   = data.get('api_url', '').strip() or 'https://api.green-api.com'
-
-    if not id_inst or not api_tok:
-        return jsonify({'error': 'id_instance and api_token are required'}), 400
-
-    # Пересоздаём бота с новыми credentials
-    import importlib
-    import bot as bot_module
-    # Обновляем API_URL в модуле bot на лету
-    bot_module.API_URL = api_url
-    bot = MaxBot(id_inst, api_tok)
-
-    # Сохраняем в .env чтобы пережить перезапуск
-    _save_to_env('ID_INSTANCE', id_inst)
-    _save_to_env('API_TOKEN_INSTANCE', api_tok)
-    _save_to_env('GREEN_API_URL', api_url)
-
-    logger.info(f"Bot reconfigured: instance={id_inst}, url={api_url}")
-    return jsonify({'success': True, 'id_instance': id_inst})
-
-
-def _save_to_env(key: str, value: str):
-    """Обновляет или добавляет переменную в .env файл."""
-    env_file = os.path.join(get_data_path(), '.env')
-    lines = []
-    found = False
-    if os.path.exists(env_file):
-        with open(env_file, 'r', encoding='utf-8') as f:
-            lines = f.readlines()
-        for i, line in enumerate(lines):
-            if line.startswith(f'{key}=') or line.startswith(f'{key} ='):
-                lines[i] = f'{key}={value}\n'
-                found = True
-                break
-    if not found:
-        lines.append(f'{key}={value}\n')
-    with open(env_file, 'w', encoding='utf-8') as f:
-        f.writelines(lines)
+    return jsonify({'error': 'Configure GREEN-API credentials in dashboard settings'}), 410
 
 
 # ── QR-код ────────────────────────────────────────────────────────────────
 @app.route('/api/qr')
 def api_qr():
-    return jsonify(bot.get_qr_code())
+    return jsonify(current_bot().get_qr_code())
 
 
 # ── Настройки аккаунта ────────────────────────────────────────────────────
 @app.route('/api/account-settings')
 def api_account_settings():
-    result = bot.get_account_settings()
+    result = current_bot().get_account_settings()
     return jsonify(result or {})
 
 
 # ── Перезапуск инстанса ───────────────────────────────────────────────────
 @app.route('/api/reboot', methods=['POST'])
 def api_reboot():
-    ok = bot.reboot_instance()
+    ok = current_bot().reboot_instance()
     return jsonify({'success': ok})
 
 
@@ -163,7 +134,7 @@ def api_check_contact():
     phone = data.get('phone', '').strip()
     if not phone:
         return jsonify({'error': 'phone required'}), 400
-    exist, chat_id = bot.check_contact(phone)
+    exist, chat_id = current_bot().check_contact(phone)
     return jsonify({'phone': phone, 'exists': exist, 'chatId': chat_id})
 
 
@@ -208,7 +179,12 @@ def api_broadcast():
     if not message and not file_url:
         return jsonify({'error': 'Укажите сообщение или файл'}), 400
 
-    broadcast_id = 1
+    try:
+        request_bot = current_bot()
+    except ValueError as exc:
+        return credentials_error_response(exc)
+
+    broadcast_id = data.get('broadcast_id') or 1
     counters = {'sent': 0, 'not_found': 0, 'failed': 0}
 
     def progress_cb(done, total, result):
@@ -220,6 +196,7 @@ def api_broadcast():
         sse_push({
             'done': done, 'total': total,
             'phone': result['phone'], 'status': s,
+            'message_id': result.get('message_id'),
             'broadcast_id': broadcast_id
         })
 
@@ -227,7 +204,7 @@ def api_broadcast():
         global _broadcast_active
         _broadcast_active = True
         try:
-            bot.broadcast(
+            request_bot.broadcast(
                 phones, message, delay=delay,
                 progress_cb=progress_cb,
                 use_typing=use_typing,
@@ -236,7 +213,8 @@ def api_broadcast():
         finally:
             pass
             sse_push({'done': len(phones), 'total': len(phones),
-                      'finished': True, 'broadcast_id': broadcast_id})
+                      'finished': True, 'broadcast_id': broadcast_id,
+                      **counters})
             _broadcast_active = False
 
     threading.Thread(target=run, daemon=True).start()
@@ -316,7 +294,7 @@ def api_setup_webhook():
     url  = data.get('url', '').strip()
     if not url:
         return jsonify({'error': 'URL обязателен'}), 400
-    ok = bot.setup_webhook(url)
+    ok = current_bot().setup_webhook(url)
     if ok:
         return jsonify({'success': True, 'url': url})
     return jsonify({'error': 'Не удалось установить Webhook'}), 500
@@ -394,7 +372,7 @@ def api_mark_read(msg_id):
 # ── Чаты и контакты ───────────────────────────────────────────────────────
 @app.route('/api/chats')
 def api_chats():
-    chats = bot.get_chats()
+    chats = current_bot().get_chats()
     if not chats:
         return jsonify([])
     # Фильтруем скрытые группы
@@ -405,7 +383,7 @@ def api_chats():
 
 @app.route('/api/contacts')
 def api_contacts():
-    contacts = bot.get_contacts()
+    contacts = current_bot().get_contacts()
     return jsonify(contacts)
 
 
@@ -415,7 +393,7 @@ def api_contact_info():
     chat_id = data.get('chatId', '').strip()
     if not chat_id:
         return jsonify({'error': 'chatId required'}), 400
-    info = bot.get_contact_info(chat_id)
+    info = current_bot().get_contact_info(chat_id)
     return jsonify(info or {})
 
 
@@ -426,7 +404,7 @@ def api_chat_history():
     count   = int(data.get('count', 50))
     if not chat_id:
         return jsonify({'error': 'chatId required'}), 400
-    history = bot.get_chat_history(chat_id, count)
+    history = current_bot().get_chat_history(chat_id, count)
     return jsonify(history)
 
 
@@ -436,7 +414,7 @@ def api_read_chat():
     chat_id = data.get('chatId', '').strip()
     if not chat_id:
         return jsonify({'error': 'chatId required'}), 400
-    result = bot.read_chat(chat_id)
+    result = current_bot().read_chat(chat_id)
     return jsonify({'success': bool(result)})
 
 
@@ -448,7 +426,7 @@ def api_send_message():
     message = data.get('message', '').strip()
     if not chat_id or not message:
         return jsonify({'error': 'chatId and message required'}), 400
-    result = bot.send_message(chat_id, message)
+    result = current_bot().send_message(chat_id, message)
     if result and 'idMessage' in result:
         return jsonify({'success': True, 'idMessage': result['idMessage']})
     return jsonify({'error': 'Не удалось отправить сообщение'}), 500
@@ -466,14 +444,14 @@ def api_send_file():
 
     if file_url_input:
         file_name = file_url_input.split('/')[-1] or 'file'
-        result = bot.send_file_by_url(chat_id, file_url_input, file_name, caption)
+        result = current_bot().send_file_by_url(chat_id, file_url_input, file_name, caption)
     elif 'file' in request.files:
         f = request.files['file']
         if f.filename == '':
             return jsonify({'error': 'no file selected'}), 400
         save_path = os.path.join(UPLOAD_FOLDER, f.filename)
         f.save(save_path)
-        result = bot.send_file_by_upload(chat_id, save_path, caption)
+        result = current_bot().send_file_by_upload(chat_id, save_path, caption)
         try:
             os.remove(save_path)
         except Exception:
@@ -499,7 +477,7 @@ def api_send_location():
     if not chat_id or lat is None or lon is None:
         return jsonify({'error': 'chatId, latitude, longitude required'}), 400
 
-    result = bot.send_location(chat_id, float(lat), float(lon), name, address)
+    result = current_bot().send_location(chat_id, float(lat), float(lon), name, address)
     if result and 'idMessage' in result:
         return jsonify({'success': True, 'idMessage': result['idMessage']})
     return jsonify({'error': 'Не удалось отправить геолокацию'}), 500
@@ -516,7 +494,7 @@ def api_send_contact():
     if not chat_id or not contact_phone or not contact_name:
         return jsonify({'error': 'chatId, contactPhone, contactName required'}), 400
 
-    result = bot.send_contact(chat_id, contact_phone, contact_name)
+    result = current_bot().send_contact(chat_id, contact_phone, contact_name)
     if result and 'idMessage' in result:
         return jsonify({'success': True, 'idMessage': result['idMessage']})
     return jsonify({'error': 'Не удалось отправить контакт'}), 500
@@ -525,13 +503,13 @@ def api_send_contact():
 # ── Queue ─────────────────────────────────────────────────────────────────
 @app.route('/api/queue')
 def api_queue():
-    size = bot.get_queue_size()
+    size = current_bot().get_queue_size()
     return jsonify({'size': size, 'status': 'busy' if size > 0 else 'idle'})
 
 
 @app.route('/api/queue/clear', methods=['POST'])
 def api_queue_clear():
-    result  = bot.clear_queue()
+    result  = current_bot().clear_queue()
     cleared = bool(result and result.get('clearMessagesQueue'))
     return jsonify({'cleared': cleared})
 
@@ -548,12 +526,17 @@ def api_check_contacts_bulk():
     if not phones:
         return jsonify({'error': 'Список номеров пуст'}), 400
 
+    try:
+        request_bot = current_bot()
+    except ValueError as exc:
+        return credentials_error_response(exc)
+
     def run():
         global _check_active
         _check_active = True
         try:
             for i, phone in enumerate(phones):
-                exist, chat_id = bot.check_contact(phone)
+                exist, chat_id = request_bot.check_contact(phone)
                 _push_all(_check_clients, {
                     'phone': phone, 'exists': exist, 'chatId': chat_id,
                     'done': i + 1, 'total': len(phones)
@@ -617,7 +600,7 @@ def api_create_group():
     not_found = []
     if phones:
         for phone in phones:
-            exist, chat_id = bot.check_contact(phone)
+            exist, chat_id = current_bot().check_contact(phone)
             if exist and chat_id:
                 chat_ids.append(chat_id)
             else:
@@ -626,7 +609,7 @@ def api_create_group():
         if not chat_ids and phones:
             return jsonify({'error': 'Ни один из введенных номеров не найден в WhatsApp'}), 400
 
-    group_id = bot.create_group(name, chat_ids)
+    group_id = current_bot().create_group(name, chat_ids)
     if not group_id:
         return jsonify({'error': 'Не удалось создать группу'}), 500
 
@@ -638,7 +621,7 @@ def api_create_group():
         'message_sent': False
     }
     if message:
-        resp = bot.send_message(group_id, message)
+        resp = current_bot().send_message(group_id, message)
         result['message_sent'] = bool(resp and 'idMessage' in resp)
 
     logger.info(f"Группа '{name}' создана. ID: {group_id}")
@@ -651,7 +634,7 @@ def api_group_details():
     group_id = data.get('groupId', '').strip()
     if not group_id:
         return jsonify({'error': 'groupId required'}), 400
-    res = bot.get_group_data(group_id)
+    res = current_bot().get_group_data(group_id)
     return jsonify(res or {})
 
 
@@ -662,7 +645,7 @@ def api_add_participant():
     participant = data.get('participantId', '').strip()
     if not group_id or not participant:
         return jsonify({'error': 'groupId and participantId required'}), 400
-    res = bot.add_group_participant(group_id, participant)
+    res = current_bot().add_group_participant(group_id, participant)
     return jsonify({'success': bool(res)})
 
 
@@ -673,7 +656,7 @@ def api_remove_participant():
     participant = data.get('participantId', '').strip()
     if not group_id or not participant:
         return jsonify({'error': 'groupId and participantId required'}), 400
-    res = bot.remove_group_participant(group_id, participant)
+    res = current_bot().remove_group_participant(group_id, participant)
     return jsonify({'success': bool(res)})
 
 
@@ -684,7 +667,7 @@ def api_set_admin():
     participant = data.get('participantId', '').strip()
     if not group_id or not participant:
         return jsonify({'error': 'groupId and participantId required'}), 400
-    res = bot.set_group_admin(group_id, participant)
+    res = current_bot().set_group_admin(group_id, participant)
     return jsonify({'success': bool(res)})
 
 
@@ -695,7 +678,7 @@ def api_remove_admin():
     participant = data.get('participantId', '').strip()
     if not group_id or not participant:
         return jsonify({'error': 'groupId and participantId required'}), 400
-    res = bot.remove_group_admin(group_id, participant)
+    res = current_bot().remove_group_admin(group_id, participant)
     return jsonify({'success': bool(res)})
 
 
@@ -705,7 +688,7 @@ def api_leave_group():
     group_id = data.get('groupId', '').strip()
     if not group_id:
         return jsonify({'error': 'groupId required'}), 400
-    res = bot.leave_group(group_id)
+    res = current_bot().leave_group(group_id)
     return jsonify({'success': bool(res)})
 
 
@@ -716,7 +699,7 @@ def api_update_group_name():
     group_name = data.get('groupName', '').strip()
     if not group_id or not group_name:
         return jsonify({'error': 'groupId and groupName required'}), 400
-    res = bot.update_group_name(group_id, group_name)
+    res = current_bot().update_group_name(group_id, group_name)
     return jsonify({'success': bool(res)})
 
 
@@ -734,7 +717,7 @@ def api_set_group_picture():
     file.save(path)
 
     try:
-        res = bot.set_group_picture(group_id, path)
+        res = current_bot().set_group_picture(group_id, path)
         return jsonify({'success': bool(res)})
     finally:
         if os.path.exists(path):
@@ -744,10 +727,7 @@ def api_set_group_picture():
 # ── Управление группами ───────────────────────────────────────────────────
 @app.route('/api/groups')
 def api_groups():
-    groups = db.get_groups(g.user_id)
-    hidden = []
-    filtered = [g for g in groups if g.get('group_id') not in hidden]
-    return jsonify(filtered)
+    return jsonify([])
 
 @app.route('/api/groups/delete', methods=['POST'])
 def api_delete_group():
@@ -760,7 +740,7 @@ def api_delete_group():
     pass
     # Пытаемся также выйти из группы, если мы в ней состоим
     try:
-        bot.leave_group(group_id)
+        current_bot().leave_group(group_id)
     except:
         pass
     return jsonify({'success': True})
@@ -768,7 +748,7 @@ def api_delete_group():
 
 @app.route('/api/group/<path:group_id>/data')
 def api_group_data(group_id):
-    data = bot.get_group_data(group_id)
+    data = current_bot().get_group_data(group_id)
     return jsonify(data or {})
 
 
@@ -778,10 +758,10 @@ def api_group_add(group_id):
     phone = data.get('phone', '').strip()
     if not phone:
         return jsonify({'error': 'phone required'}), 400
-    exist, chat_id = bot.check_contact(phone)
+    exist, chat_id = current_bot().check_contact(phone)
     if not exist:
         return jsonify({'error': f'Номер {phone} не найден в MAX'}), 400
-    result = bot.add_group_participant(group_id, chat_id)
+    result = current_bot().add_group_participant(group_id, chat_id)
     return jsonify({'success': bool(result), 'chatId': chat_id})
 
 
@@ -800,9 +780,9 @@ def api_group_add_bulk(group_id):
 
     results = []
     for phone in phones:
-        exist, chat_id = bot.check_contact(phone)
+        exist, chat_id = current_bot().check_contact(phone)
         if exist and chat_id:
-            ok = bot.add_group_participant(group_id, chat_id)
+            ok = current_bot().add_group_participant(group_id, chat_id)
             results.append({'phone': phone, 'success': bool(ok)})
         else:
             results.append({'phone': phone, 'success': False, 'error': 'Not found'})
@@ -816,7 +796,7 @@ def api_group_remove(group_id):
     chat_id = data.get('chatId', '').strip()
     if not chat_id:
         return jsonify({'error': 'chatId required'}), 400
-    result = bot.remove_group_participant(group_id, chat_id)
+    result = current_bot().remove_group_participant(group_id, chat_id)
     return jsonify({'success': bool(result)})
 
 
@@ -828,16 +808,16 @@ def api_group_admin(group_id):
     if not chat_id:
         return jsonify({'error': 'chatId required'}), 400
     if action == 'remove':
-        result = bot.remove_group_admin(group_id, chat_id)
+        result = current_bot().remove_group_admin(group_id, chat_id)
     else:
-        result = bot.set_group_admin(group_id, chat_id)
+        result = current_bot().set_group_admin(group_id, chat_id)
     return jsonify({'success': bool(result)})
 
 
 @app.route('/api/group/<path:group_id>/leave', methods=['POST'])
 def api_group_leave(group_id):
     logger.info(f"Запрос на выход из группы: {group_id}")
-    result = bot.leave_group(group_id)
+    result = current_bot().leave_group(group_id)
     # В любом случае удаляем и скрываем локально
     pass
     return jsonify({'success': True})
@@ -847,7 +827,7 @@ def api_group_leave(group_id):
 @app.route('/api/poll-notifications', methods=['POST'])
 def api_poll_notifications():
     """Ручной polling: получить все накопленные уведомления из очереди GREEN-API."""
-    notifications = bot.poll_all_notifications()
+    notifications = current_bot().poll_all_notifications()
     processed = 0
     for body in notifications:
         type_wh = body.get('typeWebhook', '')
@@ -905,7 +885,7 @@ def contacts_enrich():
     # Загрузить недостающие из Green API
     for cid in to_fetch:
         try:
-            info = bot.get_contact_info(cid) or {}
+            info = current_bot().get_contact_info(cid) or {}
             name       = (info.get('name') or info.get('contactName') or
                           info.get('pushname') or '').strip() or None
             avatar_url = info.get('avatar') or None
