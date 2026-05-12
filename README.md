@@ -210,6 +210,54 @@ https://imugyplwampsqwsxhjgw.supabase.co/auth/v1/callback
 
 ---
 
+## Vercel деплой frontend
+
+Vercel подходит для Next.js frontend. Flask backend (`app.py`) нужно держать отдельно: VPS, Render, Railway или другой публичный сервер. Без публичного backend URL разделы, которые обращаются к GREEN-API, не смогут выполнять Flask-запросы.
+
+### 1. Импорт проекта
+
+1. Откройте Vercel Dashboard → **Add New → Project**.
+2. Выберите GitHub репозиторий `kuyaar52ngg-crypto/MAX`.
+3. В настройках проекта укажите **Root Directory**: `frontend`.
+4. Framework Preset: **Next.js**.
+5. Build Command: `npm run build`.
+6. Install Command: `npm install`.
+
+### 2. Environment Variables
+
+В Vercel → Project → **Settings → Environment Variables** добавьте:
+
+```env
+NEXT_PUBLIC_SUPABASE_URL=https://imugyplwampsqwsxhjgw.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-public-key
+DATABASE_URL="postgresql://..."
+NEXT_PUBLIC_API_URL=https://your-public-flask-backend.example.com
+```
+
+`NEXT_PUBLIC_API_URL` должен указывать на публичный Flask backend. Для временной проверки можно использовать tunnel URL, но для production нужен стабильный адрес.
+
+### 3. Supabase Auth URLs
+
+После первого деплоя Vercel даст URL вида `https://max-xxxx.vercel.app`. Добавьте его в Supabase:
+
+```text
+Authentication → URL Configuration
+Site URL: https://max-xxxx.vercel.app
+Redirect URLs:
+https://max-xxxx.vercel.app/auth/callback
+http://localhost:3000/auth/callback
+```
+
+### 4. Google OAuth
+
+В Google Cloud OAuth Client оставьте Supabase callback:
+
+```text
+https://imugyplwampsqwsxhjgw.supabase.co/auth/v1/callback
+```
+
+---
+
 ## Структура проекта
 
 ```
