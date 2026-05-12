@@ -61,11 +61,13 @@ async function getFlaskHeaders(json = true): Promise<HeadersInit> {
   }
 
   const credentials = await getGreenCredentials();
-  if (credentials?.green_api_id && credentials?.green_api_token) {
-    headers["X-Green-Api-Id"] = credentials.green_api_id;
-    headers["X-Green-Api-Token"] = credentials.green_api_token;
-    headers["X-Green-Api-Url"] = credentials.green_api_url || "https://api.green-api.com";
+  if (!credentials?.green_api_id || !credentials?.green_api_token) {
+    throw new Error("GREEN-API credentials are not configured");
   }
+
+  headers["X-Green-Api-Id"] = credentials.green_api_id;
+  headers["X-Green-Api-Token"] = credentials.green_api_token;
+  headers["X-Green-Api-Url"] = credentials.green_api_url || "https://api.green-api.com";
 
   return headers;
 }
