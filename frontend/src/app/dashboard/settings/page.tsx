@@ -32,6 +32,7 @@ export default function SettingsPage() {
   const [savingCredentials, setSavingCredentials] = useState(false);
   const [credentialsSaved, setCredentialsSaved] = useState(false);
   const [credentialsError, setCredentialsError] = useState<string | null>(null);
+  const [instanceError, setInstanceError] = useState<string | null>(null);
 
   useEffect(() => { loadCredentials(); loadSettings(); }, []);
 
@@ -64,23 +65,32 @@ export default function SettingsPage() {
   }
 
   async function getQR() {
+    setInstanceError(null);
     try {
       const data = await apiGet<{ type: string; data?: string }>("/api/qr");
       setQrType(data.type);
       if (data.type === "qrCode" && data.data) setQrData(data.data);
       else setQrData(null);
-    } catch { /* */ }
+    } catch (err: unknown) {
+      setInstanceError(err instanceof Error ? err.message : "Не удалось получить QR-код");
+    }
   }
 
   async function reboot() {
-    await apiPost("/api/reboot", {});
-    loadSettings();
+    setInstanceError(null);
+    try {
+      await apiPost("/api/reboot", {});
+      await loadSettings();
+    } catch (err: unknown) {
+      setInstanceError(err instanceof Error ? err.message : "Не удалось перезапустить инстанс");
+    }
   }
 
   async function setupWebhook() {
     if (!webhookUrl.trim()) return;
     setSaving(true);
-    try { await apiPost("/api/setup-webhook", { url: webhookUrl.trim() }); } catch { /* */ } finally { setSaving(false); }
+    setInstanceError(null);
+    try { await apiPost("/api/setup-webhook", { url: webhookUrl.trim() }); } catch (err: unknown) { setInstanceError(err instanceof Error ? err.message : "Не удалось установить webhook"); } finally { setSaving(false); }
   }
 
   return (
@@ -166,6 +176,11 @@ export default function SettingsPage() {
             🔄 Перезапуск
           </button>
         </div>
+        {instanceError && (
+          <div className="px-4 py-3 bg-error-bg border border-error/20 rounded-xl text-error text-sm">
+            {instanceError}
+          </div>
+        )}
         {qrData && (
           <div className="flex justify-center p-4 bg-white rounded-xl">
             <img src={`data:image/png;base64,${qrData}`} alt="QR Code" className="w-48 h-48" />

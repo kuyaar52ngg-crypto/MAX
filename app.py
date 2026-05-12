@@ -865,37 +865,7 @@ def contacts_enrich():
     if not chat_ids:
         return jsonify({})
 
-    STALE_SECONDS = 7 * 24 * 3600  # 7 дней
-    now           = int(time.time())
-
-    # Получить из кэша
-    cached = {}
-
-    result = {}
-    to_fetch = []
-
-    for cid in chat_ids:
-        c = cached.get(cid)
-        if c and (now - (c.get('updated_at') or 0)) < STALE_SECONDS:
-            # Свежий кэш
-            result[cid] = {'name': c.get('name'), 'avatar_url': c.get('avatar_url')}
-        else:
-            to_fetch.append(cid)
-
-    # Загрузить недостающие из Green API
-    for cid in to_fetch:
-        try:
-            info = current_bot().get_contact_info(cid) or {}
-            name       = (info.get('name') or info.get('contactName') or
-                          info.get('pushname') or '').strip() or None
-            avatar_url = info.get('avatar') or None
-            pass
-            result[cid] = {'name': name, 'avatar_url': avatar_url}
-        except Exception as e:
-            logger.debug(f"enrich {cid}: {e}")
-            result[cid] = {'name': None, 'avatar_url': None}
-
-    return jsonify(result)
+    return jsonify({cid: {'name': None, 'avatar_url': None} for cid in chat_ids})
 
 
 # ── Запуск ────────────────────────────────────────────────────────────────

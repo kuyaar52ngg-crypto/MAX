@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import { apiGet, apiPost, apiUpload } from "@/lib/api";
+import { apiGet, apiPost, apiUpload, nxPost } from "@/lib/api";
 import { Chat, ChatMessage } from "@/lib/types";
 
 export default function MessengerPage() {
@@ -87,7 +87,7 @@ export default function MessengerPage() {
       // Enrich contacts in background
       const chatIds = chatList.map((c) => c.chatId);
       if (chatIds.length) {
-        apiPost<Record<string, { name?: string; avatar_url?: string }>>("/api/contacts/enrich", { chatIds })
+        nxPost<Record<string, { name?: string; avatar_url?: string }>>("/api/contacts/enrich", { chatIds })
           .then((data) => {
             setChats((prev) =>
               prev.map((c) => {
