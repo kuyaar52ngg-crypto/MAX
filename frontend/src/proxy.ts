@@ -8,10 +8,10 @@ import { type NextRequest, NextResponse } from "next/server";
  * (onAuthStateChange) and via Supabase JS calls in protected pages.
  */
 export function proxy(request: NextRequest) {
-  // Supabase stores the session in a cookie like `sb-<project-ref>-auth-token`
+  // Supabase can split the session into chunks like `sb-<ref>-auth-token.0`.
   const hasAuthCookie = request.cookies
     .getAll()
-    .some((c) => c.name.startsWith("sb-") && c.name.endsWith("-auth-token"));
+    .some((c) => c.name.startsWith("sb-") && c.name.includes("-auth-token"));
 
   const path = request.nextUrl.pathname;
   const isAuthRoute = path.startsWith("/login");

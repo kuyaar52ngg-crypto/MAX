@@ -29,13 +29,28 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-# Allow Next.js frontend and local development
-CORS(app, resources={r"/api/*": {
-    "origins": [
+
+def parse_cors_origins():
+    defaults = [
         "http://localhost:3000", "http://localhost:3001",
         "http://127.0.0.1:3000", "http://127.0.0.1:3001",
         "http://localhost:5000",
-    ],
+    ]
+    configured = []
+    for key in ("FRONTEND_URL", "FRONTEND_ORIGINS"):
+        configured.extend(os.getenv(key, "").split(","))
+
+    origins = []
+    for origin in [*defaults, *configured]:
+        normalized = origin.strip().rstrip("/")
+        if normalized and normalized not in origins:
+            origins.append(normalized)
+    return origins
+
+
+# Allow Next.js frontend and local development
+CORS(app, resources={r"/api/*": {
+    "origins": parse_cors_origins(),
     "allow_headers": ["Content-Type", "Authorization", "X-Green-Api-Id", "X-Green-Api-Token", "X-Green-Api-Url"],
     "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     "supports_credentials": True,
@@ -46,6 +61,7 @@ UPLOAD_FOLDER = os.path.join(get_data_path(), 'uploads')
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 FLASK_PORT = int(os.getenv('FLASK_PORT', 5000))
+FLASK_DEBUG = os.getenv('FLASK_DEBUG', '').lower() in ('1', 'true', 'yes', 'on')
 
 
 def current_bot() -> MaxBot:
@@ -871,5 +887,5 @@ def contacts_enrich():
 # ── Запуск ────────────────────────────────────────────────────────────────
 if __name__ == '__main__':
     logger.info(f"MAX Bot Dashboard запущен → http://localhost:{FLASK_PORT}")
-    app.run(host='0.0.0.0', port=FLASK_PORT, debug=True, threaded=True)
+    app.run(host='0.0.0.0', port=FLASK_PORT, debug=FLASK_DEBUG, threaded=True)
 
