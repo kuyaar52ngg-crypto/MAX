@@ -1,0 +1,91 @@
+generator client {
+  provider = "prisma-client-py"
+  interface = "sync"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Broadcast {
+  id         BigInt      @id @default(autoincrement())
+  user_id    String      @db.Uuid
+  created_at DateTime    @default(now())
+  message    String
+  total      Int         @default(0)
+  sent       Int         @default(0)
+  not_found  Int         @default(0)
+  failed     Int         @default(0)
+  status     String      @default("running")
+  file_url   String?
+  file_name  String?
+  use_typing Boolean     @default(false)
+  recipients Recipient[]
+}
+
+model Recipient {
+  id           BigInt    @id @default(autoincrement())
+  broadcast_id BigInt
+  phone        String
+  status       String    @default("pending")
+  message_id   String?
+  sent_at      DateTime  @default(now())
+  broadcast    Broadcast @relation(fields: [broadcast_id], references: [id])
+}
+
+model Template {
+  id         BigInt   @id @default(autoincrement())
+  user_id    String   @db.Uuid
+  name       String
+  text       String
+  created_at DateTime @default(now())
+}
+
+model Incoming {
+  id          BigInt   @id @default(autoincrement())
+  user_id     String?  @db.Uuid
+  sender      String
+  sender_name String?
+  message     String?
+  type        String   @default("text")
+  file_url    String?
+  received_at DateTime @default(now())
+  is_read     Boolean  @default(false)
+}
+
+model DeliveryStatus {
+  id        BigInt   @id @default(autoincrement())
+  message_id String  @unique
+  status    String   @default("sent")
+  timestamp DateTime @default(now())
+}
+
+model Group {
+  id         BigInt   @id @default(autoincrement())
+  user_id    String   @db.Uuid
+  group_id   String
+  name       String?
+  created_at DateTime @default(now())
+
+  @@unique([user_id, group_id])
+}
+
+model HiddenGroup {
+  id       BigInt @id @default(autoincrement())
+  user_id  String @db.Uuid
+  group_id String
+
+  @@unique([user_id, group_id])
+}
+
+model ContactCache {
+  id         BigInt   @id @default(autoincrement())
+  user_id    String   @db.Uuid
+  chat_id    String
+  name       String?
+  avatar_url String?
+  updated_at DateTime @default(now())
+
+  @@unique([user_id, chat_id])
+}

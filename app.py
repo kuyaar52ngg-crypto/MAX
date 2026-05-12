@@ -14,7 +14,7 @@ from flask_cors import CORS
 from dotenv import load_dotenv
 
 from bot import MaxBot
-import supabase_db as db
+import prisma_db as db
 
 def get_data_path():
     if getattr(sys, 'frozen', False):
