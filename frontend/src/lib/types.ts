@@ -47,12 +47,19 @@ export interface Broadcast {
   use_typing: boolean;
 }
 
+export interface BroadcastContact {
+  phone: string;
+  [key: string]: string;
+}
+
 export interface Recipient {
   id: number;
   broadcast_id: number;
   phone: string;
   status: "sent" | "not_found" | "error";
   message_id?: string;
+  contact_data?: Record<string, string> | null;
+  rendered_message?: string | null;
   delivery_status: string;
   sent_at?: string;
 }
