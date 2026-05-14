@@ -5,6 +5,21 @@ import { useRouter } from "next/navigation";
 import { Eye, EyeOff, Loader2 } from "lucide-react";
 import { GoogleIcon } from "@/components/icons/GoogleIcon";
 import { clearInvalidAuthSession, createClient, isInvalidRefreshTokenError } from "@/lib/supabase/client";
+import { nxGet } from "@/lib/api";
+
+interface ProfileWelcomeResponse {
+  welcomed_at: string | null;
+}
+
+async function postLoginTarget(): Promise<"/welcome" | "/dashboard"> {
+  try {
+    const profile = await nxGet<ProfileWelcomeResponse>("/api/profile/credentials");
+    return profile.welcomed_at ? "/dashboard" : "/welcome";
+  } catch {
+    // Если профиль недоступен — не блокируем юзера, отправляем в дашборд.
+    return "/dashboard";
+  }
+}
 
 export default function LoginPage() {
   const router = useRouter();
@@ -32,7 +47,8 @@ export default function LoginPage() {
         if (data.session) {
           // replace, чтобы /login не оставался в истории и кнопка «назад»
           // не возвращала юзера на форму после успешного логина.
-          router.replace("/dashboard");
+          const target = await postLoginTarget();
+          router.replace(target);
         }
       } catch (error) {
         if (isInvalidRefreshTokenError(error)) {
@@ -57,7 +73,8 @@ export default function LoginPage() {
         const { error } = await supabase.auth.signInWithPassword({ email, password });
         if (error) throw error;
         // replace — чтобы юзер не вернулся на /login по «назад» в браузере
-        router.replace("/dashboard");
+        const target = await postLoginTarget();
+        router.replace(target);
         router.refresh();
       } else {
         const { error } = await supabase.auth.signUp({ email, password });

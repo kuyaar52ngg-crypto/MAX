@@ -16,6 +16,7 @@ model Profile {
   green_api_id    String?
   green_api_token String?
   green_api_url   String   @default("https://api.green-api.com")
+  welcomed_at     DateTime?
   created_at      DateTime @default(now())
   updated_at      DateTime @updatedAt
   @@map("profiles")

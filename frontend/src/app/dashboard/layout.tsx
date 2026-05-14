@@ -20,7 +20,6 @@ import {
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { invalidateAuthCache, clearAllCredentials } from "@/lib/api";
-import { WelcomeModal } from "@/components/WelcomeModal";
 
 const NAV_ITEMS: { href: string; label: string; icon: LucideIcon }[] = [
   { href: "/dashboard", label: "Обзор", icon: BarChart3 },
@@ -278,7 +277,6 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       <main>
         {children}
       </main>
-      <WelcomeModal />
     </div>
   );
 }

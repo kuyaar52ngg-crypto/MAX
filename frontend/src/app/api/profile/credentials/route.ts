@@ -17,6 +17,7 @@ interface ProfileRow {
   green_api_id: string | null;
   green_api_token: string | null;
   green_api_url: string;
+  welcomed_at: Date | null;
 }
 
 function sanitizeProfile(profile: ProfileRow) {
@@ -27,6 +28,7 @@ function sanitizeProfile(profile: ProfileRow) {
     green_api_token: profile.green_api_token || "",
     green_api_url: profile.green_api_url || "https://api.green-api.com",
     has_credentials: Boolean(profile.green_api_id && profile.green_api_token),
+    welcomed_at: profile.welcomed_at ? profile.welcomed_at.toISOString() : null,
   };
 }
 
