@@ -12,3 +12,16 @@ export function createClient() {
   
   return supabase;
 }
+
+export function isInvalidRefreshTokenError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error || "");
+  return message.includes("Invalid Refresh Token") || message.includes("Refresh Token Not Found");
+}
+
+export async function clearInvalidAuthSession() {
+  try {
+    await createClient().auth.signOut({ scope: "local" });
+  } catch {
+    /* ignore */
+  }
+}
