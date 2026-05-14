@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Loader2 } from "lucide-react";
+import { Eye, EyeOff, Loader2 } from "lucide-react";
 import { GoogleIcon } from "@/components/icons/GoogleIcon";
 import { clearInvalidAuthSession, createClient, isInvalidRefreshTokenError } from "@/lib/supabase/client";
 
@@ -12,6 +12,7 @@ export default function LoginPage() {
   const [mode, setMode] = useState<"login" | "register">("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -29,6 +30,8 @@ export default function LoginPage() {
       try {
         const { data } = await supabase.auth.getSession();
         if (data.session) {
+          // replace, чтобы /login не оставался в истории и кнопка «назад»
+          // не возвращала юзера на форму после успешного логина.
           router.replace("/dashboard");
         }
       } catch (error) {
@@ -53,7 +56,8 @@ export default function LoginPage() {
       if (mode === "login") {
         const { error } = await supabase.auth.signInWithPassword({ email, password });
         if (error) throw error;
-        router.push("/dashboard");
+        // replace — чтобы юзер не вернулся на /login по «назад» в браузере
+        router.replace("/dashboard");
         router.refresh();
       } else {
         const { error } = await supabase.auth.signUp({ email, password });
@@ -165,6 +169,7 @@ export default function LoginPage() {
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="your@email.com"
                 required
+                autoComplete="email"
                 className="w-full px-4 py-3 bg-surface border border-border rounded-xl text-text placeholder:text-text-muted
                            focus:outline-none focus:border-border-focus focus:ring-1 focus:ring-accent-light/25 transition-all duration-200"
               />
@@ -172,16 +177,33 @@ export default function LoginPage() {
 
             <div className="login-field">
               <label className="block text-sm font-medium text-text-secondary mb-1.5">Пароль</label>
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="••••••••"
-                required
-                minLength={6}
-                className="w-full px-4 py-3 bg-surface border border-border rounded-xl text-text placeholder:text-text-muted
-                           focus:outline-none focus:border-border-focus focus:ring-1 focus:ring-accent-light/25 transition-all duration-200"
-              />
+              <div className="relative">
+                <input
+                  type={showPassword ? "text" : "password"}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="••••••••"
+                  required
+                  minLength={6}
+                  autoComplete={mode === "login" ? "current-password" : "new-password"}
+                  className="w-full px-4 py-3 pr-11 bg-surface border border-border rounded-xl text-text placeholder:text-text-muted
+                             focus:outline-none focus:border-border-focus focus:ring-1 focus:ring-accent-light/25 transition-all duration-200"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword((v) => !v)}
+                  aria-label={showPassword ? "Скрыть пароль" : "Показать пароль"}
+                  aria-pressed={showPassword}
+                  tabIndex={-1}
+                  className="absolute inset-y-0 right-0 flex items-center px-3 text-text-muted hover:text-text transition-colors"
+                >
+                  {showPassword ? (
+                    <EyeOff className="h-4 w-4" strokeWidth={2} aria-hidden="true" />
+                  ) : (
+                    <Eye className="h-4 w-4" strokeWidth={2} aria-hidden="true" />
+                  )}
+                </button>
+              </div>
             </div>
 
             <button
