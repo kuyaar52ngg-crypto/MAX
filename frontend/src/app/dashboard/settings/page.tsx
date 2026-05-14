@@ -1,6 +1,15 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import {
+  CheckCircle2,
+  KeyRound,
+  Link2,
+  QrCode,
+  RefreshCw,
+  Settings as SettingsIcon,
+  Wifi,
+} from "lucide-react";
 import { apiGet, apiPost, nxGet, nxPost, invalidateCredentialsCache } from "@/lib/api";
 
 interface AccountSettings {
@@ -96,7 +105,10 @@ export default function SettingsPage() {
   return (
     <div className="p-6 lg:p-8 max-w-4xl mx-auto space-y-6">
       <div>
-        <h1 className="text-2xl font-bold text-text">⚙️ Настройки</h1>
+        <h1 className="text-2xl font-bold text-text flex items-center gap-2">
+          <SettingsIcon className="h-6 w-6 text-text-muted" strokeWidth={2} aria-hidden="true" />
+          Настройки
+        </h1>
         <p className="text-text-muted text-sm mt-1">Управление инстансом и профилем</p>
       </div>
 
@@ -104,7 +116,10 @@ export default function SettingsPage() {
       <div className="settings-section glass rounded-2xl p-6 space-y-4">
         <div className="flex items-center justify-between gap-4">
           <div>
-            <h3 className="text-sm font-semibold text-text-secondary">🔑 GREEN-API данные</h3>
+            <h3 className="text-sm font-semibold text-text-secondary flex items-center gap-2">
+              <KeyRound className="h-4 w-4" strokeWidth={2} aria-hidden="true" />
+              GREEN-API данные
+            </h3>
             <p className="text-xs text-text-muted mt-1">Эти данные хранятся в Supabase отдельно для каждого пользователя</p>
           </div>
           {credentials.has_credentials && (
@@ -161,7 +176,10 @@ export default function SettingsPage() {
 
       {/* Instance status */}
       <div className="settings-section glass rounded-2xl p-6 space-y-4">
-        <h3 className="text-sm font-semibold text-text-secondary">📡 Инстанс</h3>
+        <h3 className="text-sm font-semibold text-text-secondary flex items-center gap-2">
+          <Wifi className="h-4 w-4" strokeWidth={2} aria-hidden="true" />
+          Инстанс
+        </h3>
         {settings && (
           <div className="grid grid-cols-2 gap-4 text-sm">
             <div><span className="text-text-muted text-xs">Телефон</span><div className="text-text font-medium">{settings.phone || "—"}</div></div>
@@ -169,11 +187,13 @@ export default function SettingsPage() {
           </div>
         )}
         <div className="flex gap-3">
-          <button onClick={getQR} className="px-4 py-2 bg-surface border border-border rounded-xl text-sm text-text hover:border-accent/40 transition-colors">
-            📱 QR-код
+          <button onClick={getQR} className="px-4 py-2 bg-surface border border-border rounded-xl text-sm text-text hover:border-accent/40 transition-colors flex items-center gap-2">
+            <QrCode className="h-4 w-4" strokeWidth={2} aria-hidden="true" />
+            QR-код
           </button>
-          <button onClick={reboot} className="px-4 py-2 bg-surface border border-border rounded-xl text-sm text-text hover:border-warning/40 transition-colors">
-            🔄 Перезапуск
+          <button onClick={reboot} className="px-4 py-2 bg-surface border border-border rounded-xl text-sm text-text hover:border-warning/40 transition-colors flex items-center gap-2">
+            <RefreshCw className="h-4 w-4" strokeWidth={2} aria-hidden="true" />
+            Перезапуск
           </button>
         </div>
         {instanceError && (
@@ -187,15 +207,19 @@ export default function SettingsPage() {
           </div>
         )}
         {qrType === "alreadyLogged" && (
-          <div className="px-4 py-3 bg-success-bg border border-success/20 rounded-xl text-success text-sm">
-            ✅ Инстанс уже авторизован
+          <div className="px-4 py-3 bg-success-bg border border-success/20 rounded-xl text-success text-sm flex items-center gap-2">
+            <CheckCircle2 className="h-4 w-4 shrink-0" strokeWidth={2} aria-hidden="true" />
+            Инстанс уже авторизован
           </div>
         )}
       </div>
 
       {/* Webhook */}
       <div className="settings-section glass rounded-2xl p-6 space-y-4">
-        <h3 className="text-sm font-semibold text-text-secondary">🔗 Webhook</h3>
+        <h3 className="text-sm font-semibold text-text-secondary flex items-center gap-2">
+          <Link2 className="h-4 w-4" strokeWidth={2} aria-hidden="true" />
+          Webhook
+        </h3>
         <div className="flex gap-3">
           <input type="url" value={webhookUrl} onChange={(e) => setWebhookUrl(e.target.value)}
             placeholder="https://your-domain.com/webhook"

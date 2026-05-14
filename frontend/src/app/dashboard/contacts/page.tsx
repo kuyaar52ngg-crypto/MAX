@@ -1,6 +1,15 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
+import {
+  BarChart3,
+  Check,
+  Download,
+  FolderOpen,
+  Search,
+  UserCheck,
+  X,
+} from "lucide-react";
 import { apiGet, apiPost, apiSSE, apiUpload } from "@/lib/api";
 
 interface Contact {
@@ -26,8 +35,20 @@ export default function ContactsPage() {
   const [massProgress, setMassProgress] = useState<{ done: number; total: number } | null>(null);
 
   const [isAccordionOpen, setIsAccordionOpen] = useState(false);
+  const sseCloseRef = useRef<(() => void) | null>(null);
 
   useEffect(() => { loadContacts(); }, []);
+
+  // Закрываем активный SSE при размонтировании, иначе EventSource будет
+  // жить в фоне после перехода на другую страницу.
+  useEffect(() => {
+    return () => {
+      if (sseCloseRef.current) {
+        sseCloseRef.current();
+        sseCloseRef.current = null;
+      }
+    };
+  }, []);
 
   async function loadContacts() {
     setLoading(true);
@@ -85,16 +106,38 @@ export default function ContactsPage() {
     setMassChecking(true);
     setMassResults([]);
     setMassProgress(null);
+
+    // На всякий случай закрываем предыдущий SSE, если он остался активен.
+    if (sseCloseRef.current) {
+      sseCloseRef.current();
+      sseCloseRef.current = null;
+    }
+
     try {
       await apiPost("/api/check-contacts-bulk", { phones: massPhones });
-      apiSSE("/api/check-contacts/progress", (data: any) => {
-        if (data.finished) {
+      const close = apiSSE(
+        "/api/check-contacts/progress",
+        (data: any) => {
+          if (data.finished) {
+            setMassChecking(false);
+            if (sseCloseRef.current) {
+              sseCloseRef.current();
+              sseCloseRef.current = null;
+            }
+          } else {
+            setMassProgress({ done: data.done, total: data.total });
+            setMassResults((prev) => [
+              ...prev,
+              { phone: data.phone, exists: data.exists, chatId: data.chatId },
+            ]);
+          }
+        },
+        () => {
           setMassChecking(false);
-        } else {
-          setMassProgress({ done: data.done, total: data.total });
-          setMassResults((prev) => [...prev, { phone: data.phone, exists: data.exists, chatId: data.chatId }]);
-        }
-      }, () => setMassChecking(false));
+          sseCloseRef.current = null;
+        },
+      );
+      sseCloseRef.current = close;
     } catch {
       setMassChecking(false);
     }
@@ -116,13 +159,19 @@ export default function ContactsPage() {
   return (
     <div className="p-6 lg:p-8 max-w-5xl mx-auto space-y-6">
       <div>
-        <h1 className="text-2xl font-bold text-text">👤 Проверка номеров</h1>
+        <h1 className="text-2xl font-bold text-text flex items-center gap-2">
+          <UserCheck className="h-6 w-6 text-text-muted" strokeWidth={2} aria-hidden="true" />
+          Проверка номеров
+        </h1>
         <p className="text-text-muted text-sm mt-1">Управление контактами</p>
       </div>
 
       {/* Check single contact */}
       <div className="contact-section glass rounded-2xl p-6 space-y-4">
-        <h3 className="text-sm font-semibold text-text-secondary">🔍 Проверка номера</h3>
+        <h3 className="text-sm font-semibold text-text-secondary flex items-center gap-2">
+          <Search className="h-4 w-4" strokeWidth={2} aria-hidden="true" />
+          Проверка номера
+        </h3>
         <div className="flex gap-3">
           <input
             type="text"
@@ -143,15 +192,28 @@ export default function ContactsPage() {
           </button>
         </div>
         {checkResult && (
-          <div className={`px-4 py-3 rounded-xl text-sm ${checkResult.exists ? "bg-success-bg border border-success/20 text-success" : "bg-error-bg border border-error/20 text-error"}`}>
-            {checkResult.exists ? `✅ Найден! chatId: ${checkResult.chatId}` : "❌ Не зарегистрирован в WhatsApp"}
+          <div className={`px-4 py-3 rounded-xl text-sm flex items-center gap-2 ${checkResult.exists ? "bg-success-bg border border-success/20 text-success" : "bg-error-bg border border-error/20 text-error"}`}>
+            {checkResult.exists ? (
+              <>
+                <Check className="h-4 w-4 shrink-0" strokeWidth={2.5} aria-hidden="true" />
+                <span>Найден! chatId: {checkResult.chatId}</span>
+              </>
+            ) : (
+              <>
+                <X className="h-4 w-4 shrink-0" strokeWidth={2.5} aria-hidden="true" />
+                <span>Не зарегистрирован в WhatsApp</span>
+              </>
+            )}
           </div>
         )}
       </div>
 
       {/* Mass Check */}
       <div className="contact-section glass rounded-2xl p-6 space-y-4">
-        <h3 className="text-sm font-semibold text-text-secondary">📊 Массовая проверка</h3>
+        <h3 className="text-sm font-semibold text-text-secondary flex items-center gap-2">
+          <BarChart3 className="h-4 w-4" strokeWidth={2} aria-hidden="true" />
+          Массовая проверка
+        </h3>
         <div className="flex flex-wrap gap-2 p-3 bg-bg/50 border border-border rounded-xl min-h-[48px]">
           {massPhones.map((p, i) => (
             <span key={i} className="inline-flex items-center gap-1 px-2.5 py-1 bg-accent/15 border border-accent/20 rounded-lg text-xs text-accent-light">
@@ -171,7 +233,8 @@ export default function ContactsPage() {
         <div className="flex justify-between items-center">
           <div className="flex gap-3">
             <label className="flex items-center gap-2 px-4 py-2 bg-surface border border-border rounded-xl text-xs text-text-secondary cursor-pointer hover:border-accent/40 transition-colors">
-              📁 Загрузить CSV
+              <FolderOpen className="h-4 w-4" strokeWidth={2} aria-hidden="true" />
+              Загрузить CSV
               <input type="file" accept=".csv" onChange={handleMassCSV} className="hidden" />
             </label>
             <button
@@ -204,9 +267,10 @@ export default function ContactsPage() {
               <button
                 onClick={downloadValidCSV}
                 disabled={!massResults.some(r => r.exists)}
-                className="px-3 py-1.5 bg-success/20 text-success text-xs font-medium rounded-lg hover:bg-success/30 transition-colors disabled:opacity-50"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-success/20 text-success text-xs font-medium rounded-lg hover:bg-success/30 transition-colors disabled:opacity-50"
               >
-                📥 Скачать валидные (CSV)
+                <Download className="h-3.5 w-3.5" strokeWidth={2} aria-hidden="true" />
+                Скачать валидные (CSV)
               </button>
             </div>
             {massProgress && (
@@ -218,7 +282,19 @@ export default function ContactsPage() {
               {massResults.map((r, i) => (
                 <div key={i} className="flex justify-between items-center py-1 border-b border-border/50 last:border-0">
                   <span className="font-mono">{r.phone}</span>
-                  <span className={r.exists ? "text-success" : "text-error"}>{r.exists ? "✅ Есть" : "❌ Нет"}</span>
+                  <span className={`inline-flex items-center gap-1 ${r.exists ? "text-success" : "text-error"}`}>
+                    {r.exists ? (
+                      <>
+                        <Check className="h-3.5 w-3.5" strokeWidth={2.5} aria-hidden="true" />
+                        Есть
+                      </>
+                    ) : (
+                      <>
+                        <X className="h-3.5 w-3.5" strokeWidth={2.5} aria-hidden="true" />
+                        Нет
+                      </>
+                    )}
+                  </span>
                 </div>
               ))}
             </div>

@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback } from "react";
+import { ChevronLeft, FileImage, Loader2, MapPin, MessageCircle, MessageSquare, Mic, Paperclip, RotateCw, Search, Send, Smile, User, Users } from "lucide-react";
 import { apiGet, apiPost, apiUpload, nxPost } from "@/lib/api";
 import { Chat, ChatMessage } from "@/lib/types";
 
@@ -39,49 +40,34 @@ export default function MessengerPage() {
 
   useEffect(() => { loadChats(); }, []);
 
-  const scrollToBottom = useCallback(() => {
-    setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }), 100);
+  const scrollToBottom = useCallback((behavior: ScrollBehavior = "smooth") => {
+    requestAnimationFrame(() => messagesEndRef.current?.scrollIntoView({ behavior }));
   }, []);
 
   async function loadChats() {
     setLoadingChats(true);
     try {
-      const [chatsRes, groupsRes] = await Promise.all([
-        apiGet<Array<Record<string, unknown>>>("/api/chats").catch(() => []),
-        apiGet<Array<Record<string, unknown>>>("/api/groups").catch(() => []),
-      ]);
+      // Берём чаты только из GREEN-API. Старый /api/groups Flask-эндпоинт
+      // отдаёт пустой список и тратил впустую один запрос на каждом открытии
+      // мессенджера — убрали его из параллельной загрузки.
+      const chatsRes = await apiGet<Array<Record<string, unknown>>>("/api/chats").catch(() => []);
 
-      const chatList: Chat[] = (Array.isArray(chatsRes) ? chatsRes : []).map((c) => ({
-        id: String(c.chatId || c.id || ""),
-        chatId: String(c.chatId || c.id || ""),
-        name: String(c.name || c.chatId || "Без имени"),
-        type: (c.type === "group" || 
-               String(c.chatId).endsWith("@g.us") || 
-               String(c.chatId).includes("-")) ? "group" as const : "chat" as const,
-        preview: String((c.lastMessage as Record<string, unknown>)?.textMessage || "").slice(0, 50),
-        timestamp: Number((c.lastMessage as Record<string, unknown>)?.timestamp || 0),
-        avatarUrl: null,
-      }));
-
-      const groupList: Chat[] = (Array.isArray(groupsRes) ? groupsRes : []).map((g) => ({
-        id: String(g.group_id || ""),
-        chatId: String(g.group_id || ""),
-        name: String(g.name || g.group_id || "Группа"),
-        type: "group" as const,
-        preview: "👥 Группа",
-        timestamp: 0,
-        avatarUrl: null,
-      }));
-
-      // Объединяем и удаляем дубликаты по chatId
-      const combined = [...chatList];
-      groupList.forEach(group => {
-        if (!combined.some(c => c.chatId === group.chatId)) {
-          combined.push(group);
-        }
+      const chatList: Chat[] = (Array.isArray(chatsRes) ? chatsRes : []).map((c) => {
+        const chatId = String(c.chatId || c.id || "");
+        const isGroup =
+          c.type === "group" || chatId.endsWith("@g.us") || chatId.includes("-");
+        return {
+          id: chatId,
+          chatId,
+          name: String(c.name || chatId || "Без имени"),
+          type: isGroup ? ("group" as const) : ("chat" as const),
+          preview: String((c.lastMessage as Record<string, unknown>)?.textMessage || "").slice(0, 50),
+          timestamp: Number((c.lastMessage as Record<string, unknown>)?.timestamp || 0),
+          avatarUrl: null,
+        };
       });
 
-      const all = combined.sort((a, b) => b.timestamp - a.timestamp);
+      const all = chatList.sort((a, b) => b.timestamp - a.timestamp);
       setChats(all);
 
       // Enrich contacts in background
@@ -119,7 +105,8 @@ export default function MessengerPage() {
     try {
       const history = await apiPost<ChatMessage[]>("/api/chat-history", { chatId: chat.chatId, count: msgCount });
       setMessages(Array.isArray(history) ? [...history].reverse() : []);
-      scrollToBottom();
+      // первый рендер истории — без анимации, чтобы открытие чата было мгновенным
+      scrollToBottom("auto");
     } catch {
       /* error */
     } finally {
@@ -215,66 +202,85 @@ export default function MessengerPage() {
     }
   }
 
-  const tabFiltered = chats.filter((c) => {
-    if (activeTab === "chats") return c.type === "chat";
-    if (activeTab === "groups") return c.type === "group";
-    return true;
-  });
+  const tabFiltered = useMemo(
+    () => chats.filter((c) => {
+      if (activeTab === "chats") return c.type === "chat";
+      if (activeTab === "groups") return c.type === "group";
+      return true;
+    }),
+    [chats, activeTab],
+  );
 
-  const filteredChats = search
-    ? tabFiltered.filter((c) => c.name.toLowerCase().includes(search.toLowerCase()) || c.chatId.includes(search))
-    : tabFiltered;
+  const filteredChats = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return tabFiltered;
+    return tabFiltered.filter(
+      (c) => c.name.toLowerCase().includes(q) || c.chatId.includes(search.trim()),
+    );
+  }, [tabFiltered, search]);
 
   function getMessageText(m: ChatMessage): string {
     const mt = m.typeMessage || "";
     if (mt === "textMessage" || mt === "extendedTextMessage") return m.textMessage || "";
-    if (mt === "imageMessage") return `🖼️ ${m.caption || "Фото"}`;
-    if (mt === "videoMessage") return `🎥 ${m.caption || "Видео"}`;
-    if (mt === "audioMessage") return "🎵 Голосовое";
-    if (mt === "documentMessage") return `📎 ${m.fileName || "Документ"}`;
-    if (mt === "locationMessage") return "📍 Геолокация";
-    if (mt === "contactMessage") return "👤 Контакт";
-    if (mt === "stickerMessage") return "🏷️ Стикер";
+    if (mt === "imageMessage") return m.caption || "Фото";
+    if (mt === "videoMessage") return m.caption || "Видео";
+    if (mt === "audioMessage") return "Голосовое";
+    if (mt === "documentMessage") return m.fileName || "Документ";
+    if (mt === "locationMessage") return "Геолокация";
+    if (mt === "contactMessage") return "Контакт";
+    if (mt === "stickerMessage") return "Стикер";
     return m.textMessage || m.caption || `[${mt || "media"}]`;
   }
 
 
   return (
-    <div className="flex h-full overflow-hidden">
+    <div className="flex h-[calc(100vh-88px)] overflow-hidden px-5 pb-6 lg:px-8">
       {/* Chat list sidebar */}
       <div
         ref={chatListRef}
-        className={`w-80 flex-shrink-0 flex flex-col border-r border-border bg-bg-elevated
+        className={`w-80 flex-shrink-0 flex flex-col rounded-2xl border border-border bg-surface shadow-md
                     ${activeChat ? "hidden lg:flex" : "flex"} transition-all`}
       >
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-border">
-          <h2 className="text-sm font-bold text-text flex items-center gap-2">💬 Чаты</h2>
+          <h2 className="text-sm font-bold text-text flex items-center gap-2">
+            <MessageCircle className="h-4 w-4" strokeWidth={2} aria-hidden="true" />
+            Чаты
+          </h2>
           <button
             onClick={() => { loadChats(); }}
-            className="p-1.5 rounded-lg hover:bg-surface-hover transition-colors text-text-muted hover:text-accent text-sm"
+            className="p-1.5 rounded-lg hover:bg-surface-hover transition-colors text-text-muted hover:text-accent"
+            title="Обновить список"
+            aria-label="Обновить список чатов"
           >
-            ↻
+            <RotateCw className="h-4 w-4" strokeWidth={2} aria-hidden="true" />
           </button>
         </div>
 
         {/* Search */}
-        <div className="px-3 py-2 space-y-2">
-          <input
-            type="text"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="🔍 Поиск..."
-            className="w-full px-3 py-2 bg-surface border border-border rounded-xl text-sm text-text placeholder:text-text-muted
-                       focus:outline-none focus:border-accent/50 transition-colors"
-          />
-          <div className="flex bg-surface p-1 rounded-xl border border-border">
+        <div className="px-3 py-3 space-y-2">
+          <div className="relative">
+            <Search
+              className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-muted"
+              strokeWidth={2}
+              aria-hidden="true"
+            />
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Поиск..."
+              className="w-full pl-9 pr-3 py-2 bg-bg-elevated border border-border rounded-xl text-sm text-text placeholder:text-text-muted
+                         focus:outline-none focus:border-border-focus transition-colors"
+            />
+          </div>
+          <div className="flex bg-bg-elevated p-1 rounded-xl border border-border">
             {(["all", "chats", "groups"] as const).map((tab) => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab)}
                 className={`flex-1 py-1 text-xs font-medium rounded-lg transition-colors
-                  ${activeTab === tab ? "bg-bg text-text shadow-sm border border-border" : "text-text-muted hover:text-text hover:bg-surface-hover"}`}
+                  ${activeTab === tab ? "bg-surface text-text shadow-sm border border-border" : "text-text-muted hover:text-text hover:bg-surface-hover"}`}
               >
                 {tab === "all" ? "Все" : tab === "chats" ? "Чаты" : "Группы"}
               </button>
@@ -303,15 +309,17 @@ export default function MessengerPage() {
               <button
                 key={chat.id}
                 onClick={() => openChat(chat)}
-                className={`w-full flex items-center gap-3 px-4 py-3 text-left transition-all duration-200 hover:bg-surface-hover
-                  ${activeChat?.id === chat.id ? "bg-accent/10 border-l-2 border-accent" : "border-l-2 border-transparent"}`}
+                className={`mx-2 mb-1 flex w-[calc(100%-16px)] items-center gap-3 rounded-xl px-3 py-3 text-left transition-all duration-200 hover:bg-surface-hover
+                  ${activeChat?.id === chat.id ? "bg-accent-subtle ring-1 ring-accent-light/25" : "ring-1 ring-transparent"}`}
               >
                 <div className={`w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold text-white flex-shrink-0 overflow-hidden
                   ${chat.type === "group" ? "bg-gradient-to-br from-emerald-600 to-emerald-400" : "bg-gradient-to-br from-accent to-accent-light"}`}
                 >
                   {chat.avatarUrl ? (
                     <img src={chat.avatarUrl} alt="" className="w-full h-full object-cover rounded-full" />
-                  ) : chat.type === "group" ? "👥" : (
+                  ) : chat.type === "group" ? (
+                    <Users className="h-5 w-5" strokeWidth={2} aria-hidden="true" />
+                  ) : (
                     chat.name.slice(0, 2).toUpperCase()
                   )}
                 </div>
@@ -331,17 +339,18 @@ export default function MessengerPage() {
       </div>
 
       {/* Chat area */}
-      <div className={`flex-1 flex flex-col min-w-0 ${!activeChat ? "hidden lg:flex" : "flex"}`}>
+      <div className={`ml-4 min-w-0 flex-1 flex-col rounded-2xl border border-border bg-surface shadow-md ${!activeChat ? "hidden lg:flex" : "flex"}`}>
         {activeChat ? (
           <>
             {/* Chat header */}
-            <div className="flex items-center gap-3 px-5 py-3 border-b border-border bg-surface flex-shrink-0">
+            <div className="flex items-center gap-3 px-5 py-3 border-b border-border bg-surface flex-shrink-0 rounded-t-2xl">
               {/* Back button (mobile) */}
               <button
                 onClick={() => setActiveChat(null)}
                 className="lg:hidden p-1.5 rounded-lg hover:bg-surface-hover transition-colors text-text-muted"
+                aria-label="Назад к списку чатов"
               >
-                ←
+                <ChevronLeft className="h-5 w-5" strokeWidth={2} aria-hidden="true" />
               </button>
 
               <div className={`w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold text-white overflow-hidden
@@ -349,7 +358,9 @@ export default function MessengerPage() {
               >
                 {activeChat.avatarUrl ? (
                   <img src={activeChat.avatarUrl} alt="" className="w-full h-full object-cover rounded-full" />
-                ) : activeChat.type === "group" ? "👥" : (
+                ) : activeChat.type === "group" ? (
+                  <Users className="h-5 w-5" strokeWidth={2} aria-hidden="true" />
+                ) : (
                   activeChat.name.slice(0, 2).toUpperCase()
                 )}
               </div>
@@ -364,23 +375,28 @@ export default function MessengerPage() {
                   type="number"
                   value={msgCount}
                   onChange={(e) => setMsgCount(Number(e.target.value))}
-                  className="w-16 px-2 py-1 text-xs bg-bg border border-border rounded-lg text-text text-center"
+                  className="w-16 px-2 py-1 text-xs bg-bg-elevated border border-border rounded-lg text-text text-center"
                   min={10}
                   max={500}
                 />
                 <button
                   onClick={() => openChat(activeChat)}
-                  className="p-1.5 rounded-lg hover:bg-surface-hover transition-colors text-text-muted hover:text-accent text-sm"
+                  className="p-1.5 rounded-lg hover:bg-surface-hover transition-colors text-text-muted hover:text-accent"
+                  title="Обновить историю"
+                  aria-label="Обновить историю сообщений"
                 >
-                  ↻
+                  <RotateCw className="h-4 w-4" strokeWidth={2} aria-hidden="true" />
                 </button>
               </div>
             </div>
 
             {/* Messages */}
-            <div className="flex-1 overflow-y-auto px-5 py-4 space-y-1">
+            <div className="flex-1 overflow-y-auto px-5 py-4 space-y-1 bg-bg-elevated/45">
               {loadingMsgs ? (
-                <div className="flex items-center justify-center h-full text-text-muted text-sm">⏳ Загрузка...</div>
+                <div className="flex items-center justify-center h-full text-text-muted text-sm gap-2">
+                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                  Загрузка...
+                </div>
               ) : messages.length === 0 ? (
                 <div className="flex items-center justify-center h-full text-text-muted text-sm">Сообщений нет</div>
               ) : (
@@ -444,25 +460,25 @@ export default function MessengerPage() {
                 <button
                   onClick={() => setShowAttach(!showAttach)}
                   className={`p-2 transition-colors rounded-full hover:bg-white/5 ${showAttach ? "bg-white/5 text-[#00b233]" : "text-[#aebac1]"}`}
+                  aria-label="Прикрепить вложение"
+                  aria-expanded={showAttach}
                 >
-                  <svg className="w-6 h-6 transform -rotate-45" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
-                  </svg>
+                  <Paperclip className="h-6 w-6" strokeWidth={2} aria-hidden="true" />
                 </button>
 
                 {showAttach && (
                   <div className="absolute bottom-full left-0 mb-2 w-48 bg-[#233138] border border-[#111b21] rounded-xl shadow-2xl overflow-hidden z-50 py-2">
                     <input type="file" ref={fileInputRef} onChange={handleFileUpload} className="hidden" />
                     <button onClick={() => fileInputRef.current?.click()} className="w-full flex items-center gap-3 px-4 py-2 hover:bg-[#111b21] transition-colors text-left text-sm text-[#d1d7db]">
-                      <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                      <FileImage className="h-5 w-5 text-white" strokeWidth={2} aria-hidden="true" />
                       Файл
                     </button>
                     <button onClick={() => { setShowAttach(false); setAttachModal("contact"); }} className="w-full flex items-center gap-3 px-4 py-2 hover:bg-[#111b21] transition-colors text-left text-sm text-[#00a884]">
-                      <svg className="w-5 h-5 text-[#00a884]" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg>
+                      <User className="h-5 w-5 text-[#00a884]" strokeWidth={2} aria-hidden="true" />
                       Контакт
                     </button>
                     <button onClick={() => { setShowAttach(false); setAttachModal("location"); }} className="w-full flex items-center gap-3 px-4 py-2 hover:bg-[#111b21] transition-colors text-left text-sm text-[#d1d7db]">
-                      <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+                      <MapPin className="h-5 w-5 text-white" strokeWidth={2} aria-hidden="true" />
                       Локация
                     </button>
                   </div>
@@ -504,15 +520,11 @@ export default function MessengerPage() {
               />
 
               <div className="flex items-center gap-1 text-text-muted">
-                <button className="p-2 hover:text-text transition-colors rounded-full hover:bg-surface-hover">
-                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M14.828 14.828a4 4 0 01-5.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                  </svg>
+                <button className="p-2 hover:text-text transition-colors rounded-full hover:bg-surface-hover" aria-label="Эмодзи">
+                  <Smile className="h-6 w-6" strokeWidth={2} aria-hidden="true" />
                 </button>
-                <button className="p-2 hover:text-text transition-colors rounded-full hover:bg-surface-hover">
-                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
-                  </svg>
+                <button className="p-2 hover:text-text transition-colors rounded-full hover:bg-surface-hover" aria-label="Голосовое сообщение">
+                  <Mic className="h-6 w-6" strokeWidth={2} aria-hidden="true" />
                 </button>
               </div>
 
@@ -522,16 +534,12 @@ export default function MessengerPage() {
                   disabled={sending}
                   className="w-10 h-10 ml-2 rounded-full bg-accent hover:bg-accent-hover text-white flex items-center justify-center
                              transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed active:scale-90 hover:shadow-glow"
+                  aria-label={sending ? "Сообщение отправляется" : "Отправить сообщение"}
                 >
                   {sending ? (
-                    <svg className="animate-spin w-4 h-4" viewBox="0 0 24 24">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                    </svg>
+                    <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
                   ) : (
-                    <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
-                      <path d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z" />
-                    </svg>
+                    <Send className="h-4 w-4" strokeWidth={2} aria-hidden="true" />
                   )}
                 </button>
               )}
@@ -540,7 +548,7 @@ export default function MessengerPage() {
         ) : (
           <div className="flex-1 flex items-center justify-center">
             <div className="text-center text-text-muted space-y-3">
-              <div className="text-5xl opacity-30">💬</div>
+              <MessageSquare className="mx-auto h-14 w-14 opacity-30" strokeWidth={1.5} aria-hidden="true" />
               <p className="text-sm">Выберите чат слева</p>
             </div>
           </div>
