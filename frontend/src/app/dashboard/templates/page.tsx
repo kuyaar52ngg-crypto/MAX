@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { Copy, FileText, Plus, Trash2 } from "lucide-react";
 import { nxGet, nxPost, nxDelete } from "@/lib/api";
 import { Template } from "@/lib/types";
 
@@ -47,7 +48,10 @@ export default function TemplatesPage() {
   return (
     <div className="p-6 lg:p-8 max-w-4xl mx-auto space-y-6">
       <div>
-        <h1 className="text-2xl font-bold text-text">📝 Шаблоны</h1>
+        <div className="mb-3 inline-flex h-11 w-11 items-center justify-center rounded-xl bg-accent text-bg shadow-sm">
+          <FileText className="h-5 w-5" strokeWidth={2.2} />
+        </div>
+        <h1 className="text-3xl font-black tracking-[-0.03em] text-text">Шаблоны</h1>
         <p className="text-text-muted text-sm mt-1">Готовые тексты для рассылок</p>
       </div>
 
@@ -76,7 +80,10 @@ export default function TemplatesPage() {
           className="px-6 py-2.5 bg-accent hover:bg-accent-hover text-white text-sm font-medium rounded-xl transition-all
                      disabled:opacity-40 active:scale-95"
         >
-          {creating ? "Создание..." : "➕ Создать шаблон"}
+          <span className="inline-flex items-center gap-2">
+            {!creating && <Plus className="h-4 w-4" strokeWidth={2.2} />}
+            {creating ? "Создание..." : "Создать шаблон"}
+          </span>
         </button>
       </div>
 
@@ -96,13 +103,19 @@ export default function TemplatesPage() {
                     onClick={() => copyToClipboard(t.text)}
                     className="px-2.5 py-1 text-xs text-text-muted hover:text-accent bg-surface hover:bg-surface-hover rounded-lg transition-colors"
                   >
-                    📋 Копировать
+                    <span className="inline-flex items-center gap-1.5">
+                      <Copy className="h-3.5 w-3.5" strokeWidth={2} />
+                      Копировать
+                    </span>
                   </button>
                   <button
                     onClick={() => deleteTemplate(t.id)}
                     className="px-2.5 py-1 text-xs text-text-muted hover:text-error bg-surface hover:bg-error-bg rounded-lg transition-colors"
                   >
-                    🗑️ Удалить
+                    <span className="inline-flex items-center gap-1.5">
+                      <Trash2 className="h-3.5 w-3.5" strokeWidth={2} />
+                      Удалить
+                    </span>
                   </button>
                 </div>
               </div>

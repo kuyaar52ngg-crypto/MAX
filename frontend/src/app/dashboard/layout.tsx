@@ -1,30 +1,50 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import Link from "next/link";
+import {
+  BarChart3,
+  Bot,
+  ChevronDown,
+  ClipboardList,
+  FileText,
+  LogOut,
+  Megaphone,
+  MessageCircle,
+  Settings,
+  UserCheck,
+  UserCircle,
+  Users,
+  type LucideIcon,
+} from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { invalidateAuthCache, clearAllCredentials } from "@/lib/api";
 
-const NAV_ITEMS = [
-  { href: "/dashboard", label: "Обзор", icon: "📊" },
-  { href: "/dashboard/messenger", label: "Мессенджер", icon: "💬" },
-  { href: "/dashboard/groups", label: "Группы", icon: "👥" },
-  { href: "/dashboard/broadcast", label: "Рассылка", icon: "📢" },
-  { href: "/dashboard/contacts", label: "Проверка номеров", icon: "👤" },
-  { href: "/dashboard/history", label: "История", icon: "📋" },
-  { href: "/dashboard/templates", label: "Шаблоны", icon: "📝" },
-  { href: "/dashboard/settings", label: "Настройки", icon: "⚙️" },
+const NAV_ITEMS: { href: string; label: string; icon: LucideIcon }[] = [
+  { href: "/dashboard", label: "Обзор", icon: BarChart3 },
+  { href: "/dashboard/messenger", label: "Мессенджер", icon: MessageCircle },
+  { href: "/dashboard/groups", label: "Группы", icon: Users },
+  { href: "/dashboard/broadcast", label: "Рассылка", icon: Megaphone },
+  { href: "/dashboard/contacts", label: "Проверка", icon: UserCheck },
+  { href: "/dashboard/history", label: "История", icon: ClipboardList },
+  { href: "/dashboard/templates", label: "Шаблоны", icon: FileText },
 ];
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [accountOpen, setAccountOpen] = useState(false);
+  const [userEmail, setUserEmail] = useState("");
+  const [scrolled, setScrolled] = useState(false);
+  const userInitial = useMemo(() => (userEmail || "M").trim().charAt(0).toUpperCase(), [userEmail]);
 
   // Следим за изменением сессии — редирект на /login при выходе из любого браузера
   useEffect(() => {
     const supabase = createClient();
+    supabase.auth.getUser().then((result: { data: { user: { email?: string | null } | null } }) => {
+      setUserEmail(result.data.user?.email || "");
+    }).catch(() => {});
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event: string) => {
       if (event === "SIGNED_OUT") {
         clearAllCredentials();
@@ -38,6 +58,20 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     return () => subscription.unsubscribe();
   }, [router]);
 
+  useEffect(() => {
+    setAccountOpen(false);
+  }, [pathname]);
+
+  useEffect(() => {
+    function handleScroll() {
+      setScrolled(window.scrollY > 24);
+    }
+
+    handleScroll();
+    window.addEventListener("scroll", handleScroll, { passive: true });
+    return () => window.removeEventListener("scroll", handleScroll);
+  }, []);
+
   async function handleLogout() {
     clearAllCredentials();
     const supabase = createClient();
@@ -47,96 +81,123 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   }
 
   return (
-    <div className="flex h-screen overflow-hidden bg-bg">
-      {/* Mobile overlay */}
-      {sidebarOpen && (
+    <div className="min-h-screen bg-bg text-text">
+      <header className="sticky top-0 z-50 px-3 py-3">
         <div
-          className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm lg:hidden"
-          onClick={() => setSidebarOpen(false)}
-        />
-      )}
+          className={`mx-auto grid grid-cols-[48px_minmax(0,1fr)_minmax(190px,auto)] items-center gap-6 px-4 transition-all duration-300 lg:px-5 ${
+            scrolled
+              ? "max-w-5xl rounded-xl border border-border bg-surface/95 py-2 shadow-lg backdrop-blur-2xl"
+              : "max-w-7xl border-b border-border bg-bg/90 py-1 backdrop-blur-2xl"
+          }`}
+        >
+          <Link
+            href="/dashboard"
+            aria-label="MAX Bot"
+            className={`group flex shrink-0 items-center justify-center rounded-xl bg-accent text-bg shadow-sm transition-all hover:-rotate-3 ${
+              scrolled ? "h-8 w-8" : "h-10 w-10"
+            }`}
+          >
+            <Bot className={scrolled ? "h-4 w-4" : "h-5 w-5"} strokeWidth={2.2} />
+          </Link>
 
-      {/* Sidebar */}
-      <aside
-        className={`fixed lg:static inset-y-0 left-0 z-50 w-64 flex flex-col border-r border-border bg-surface
-          transform transition-transform duration-300 ease-in-out
-          ${sidebarOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"}`}
-      >
-        {/* Logo */}
-        <div className="sidebar-logo flex items-center gap-3 px-5 py-5 border-b border-border">
-          <div className="w-9 h-9 rounded-xl bg-accent/20 border border-accent/30 flex items-center justify-center glow-accent">
-            <span className="text-lg font-bold gradient-text">M</span>
-          </div>
-          <div>
-            <h2 className="text-sm font-bold text-text">MAX Bot</h2>
-            <p className="text-[10px] text-text-muted">Dashboard</p>
-          </div>
-        </div>
+          <nav className="no-scrollbar flex min-w-0 justify-center gap-1.5 overflow-x-auto">
+            {NAV_ITEMS.map((item) => {
+              const isActive =
+                item.href === "/dashboard"
+                  ? pathname === "/dashboard"
+                  : pathname.startsWith(item.href);
+              const Icon = item.icon;
 
-        {/* Navigation */}
-        <nav className="flex-1 overflow-y-auto px-3 py-4 space-y-1">
-          {NAV_ITEMS.map((item) => {
-            const isActive =
-              item.href === "/dashboard"
-                ? pathname === "/dashboard"
-                : pathname.startsWith(item.href);
+              return (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  className={`inline-flex shrink-0 items-center gap-2 rounded-lg px-3 font-medium transition-all ${
+                    scrolled ? "py-1.5 text-xs" : "py-2 text-sm"
+                  }
+                    ${isActive
+                      ? "bg-accent text-bg shadow-sm"
+                      : "text-text-muted hover:bg-surface-hover hover:text-text"
+                    }`}
+                >
+                  <Icon className="h-4 w-4" strokeWidth={2} />
+                  {item.label}
+                </Link>
+              );
+            })}
+          </nav>
 
-            return (
-              <Link
-                key={item.href}
-                href={item.href}
-                onClick={() => setSidebarOpen(false)}
-                className={`nav-item flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-200 group
-                  ${isActive
-                    ? "bg-accent/15 text-accent-light border border-accent/20 shadow-sm"
-                    : "text-text-secondary hover:text-text hover:bg-surface-hover"
-                  }`}
-              >
-                <span className={`text-lg transition-transform duration-200 ${isActive ? "scale-110" : "group-hover:scale-110"}`}>
-                  {item.icon}
+          <div className="relative justify-self-end">
+            <button
+              type="button"
+              onClick={() => setAccountOpen((value) => !value)}
+              aria-expanded={accountOpen}
+              className={`inline-flex items-center gap-3 rounded-xl border px-2.5 text-left transition-all hover:border-border-focus hover:bg-surface-hover ${
+                scrolled ? "h-9" : "h-10"
+              } ${
+                pathname.startsWith("/dashboard/settings")
+                  ? "border-accent bg-accent text-bg"
+                  : "border-border bg-surface text-text"
+              }`}
+            >
+              <span className={`flex h-7 w-7 items-center justify-center rounded-lg text-xs font-bold ${
+                pathname.startsWith("/dashboard/settings")
+                  ? "bg-bg text-accent"
+                  : "bg-bg-elevated text-text"
+              }`}>
+                {userInitial}
+              </span>
+              <span className="hidden min-w-0 sm:block">
+                <span className="block text-xs font-bold leading-4">Личный кабинет</span>
+                <span className={`block max-w-[170px] truncate text-[11px] leading-4 ${
+                  pathname.startsWith("/dashboard/settings") ? "text-bg/70" : "text-text-muted"
+                }`}>
+                  {userEmail || "Профиль MAX"}
                 </span>
-                {item.label}
-                {isActive && (
-                  <div className="ml-auto w-1.5 h-1.5 rounded-full bg-accent" />
-                )}
-              </Link>
-            );
-          })}
-        </nav>
+              </span>
+              <ChevronDown className={`h-4 w-4 transition-transform ${accountOpen ? "rotate-180" : ""}`} strokeWidth={2} />
+            </button>
 
-        {/* Logout */}
-        <div className="px-3 py-4 border-t border-border">
-          <button
-            onClick={handleLogout}
-            className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium
-                       text-text-muted hover:text-error hover:bg-error-bg transition-all duration-200"
-          >
-            <span className="text-lg">🚪</span>
-            Выйти
-          </button>
+            {accountOpen && (
+              <div className="absolute right-0 top-full z-[80] mt-3 w-72 overflow-hidden rounded-2xl border border-border bg-surface p-2 shadow-lg">
+                <div className="rounded-xl bg-bg-elevated p-4">
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-accent text-bg">
+                      <UserCircle className="h-5 w-5" strokeWidth={2.2} />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="text-sm font-bold text-text">Личный кабинет</div>
+                      <div className="truncate text-xs text-text-muted">{userEmail || "Аккаунт MAX Bot"}</div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="mt-2 space-y-1">
+                  <Link
+                    href="/dashboard/settings"
+                    className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-text-secondary transition-colors hover:bg-surface-hover hover:text-text"
+                  >
+                    <Settings className="h-4 w-4" strokeWidth={2} />
+                    Настройки
+                  </Link>
+                  <button
+                    type="button"
+                    onClick={handleLogout}
+                    className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-text-secondary transition-colors hover:bg-error-bg hover:text-error"
+                  >
+                    <LogOut className="h-4 w-4" strokeWidth={2} />
+                    Выйти
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
-      </aside>
+      </header>
 
-      {/* Main content */}
-      <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-        {/* Top bar (mobile) */}
-        <header className="lg:hidden flex items-center gap-3 px-4 py-3 border-b border-border bg-surface">
-          <button
-            onClick={() => setSidebarOpen(true)}
-            className="p-2 rounded-lg hover:bg-surface-hover transition-colors"
-          >
-            <svg className="w-5 h-5 text-text" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
-            </svg>
-          </button>
-          <span className="text-sm font-semibold text-text">MAX Bot</span>
-        </header>
-
-        {/* Page content */}
-        <main className="flex-1 overflow-y-auto">
-          {children}
-        </main>
-      </div>
+      <main>
+        {children}
+      </main>
     </div>
   );
 }
