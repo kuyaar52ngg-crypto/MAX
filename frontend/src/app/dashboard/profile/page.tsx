@@ -11,7 +11,7 @@ import {
   UserCircle,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
-import { clearAllCredentials } from "@/lib/api";
+import { clearAllCredentials, nxGet, nxPost } from "@/lib/api";
 
 interface ProfileState {
   id: string;
@@ -22,6 +22,15 @@ interface ProfileState {
   createdAt: string | null;
 }
 
+interface ProfileApiResponse {
+  display_name: string;
+  avatar_url: string | null;
+  green_api_id: string;
+  green_api_token: string;
+  green_api_url: string;
+  has_credentials: boolean;
+}
+
 export default function ProfilePage() {
   const router = useRouter();
   const supabase = useMemo(() => createClient(), []);
@@ -29,6 +38,7 @@ export default function ProfilePage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [name, setName] = useState("");
+  const [avatarInput, setAvatarInput] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
 
@@ -44,25 +54,44 @@ export default function ProfilePage() {
           return;
         }
         const md = (data.user.user_metadata || {}) as Record<string, unknown>;
+        const seedName =
+          (typeof md.full_name === "string" && md.full_name) ||
+          (typeof md.name === "string" && md.name) ||
+          (typeof md.user_name === "string" && md.user_name) ||
+          (data.user.email ? data.user.email.split("@")[0] : "");
+        const seedAvatar =
+          (typeof md.avatar_url === "string" && md.avatar_url) ||
+          (typeof md.picture === "string" && md.picture) ||
+          null;
+
+        let displayName = seedName;
+        let avatarUrl: string | null = seedAvatar;
+
+        // Параллельно тянем профиль из Prisma — там может быть имя/аватар,
+        // которые юзер сохранил руками. Игнорируем 401/500 — это не блокирует
+        // отображение страницы.
+        try {
+          const dbProfile = await nxGet<ProfileApiResponse>("/api/profile/credentials");
+          if (dbProfile.display_name) displayName = dbProfile.display_name;
+          if (dbProfile.avatar_url) avatarUrl = dbProfile.avatar_url;
+        } catch {
+          // ignore
+        }
+
         const next: ProfileState = {
           id: data.user.id,
           email: data.user.email || "",
-          displayName:
-            (typeof md.full_name === "string" && md.full_name) ||
-            (typeof md.name === "string" && md.name) ||
-            (typeof md.user_name === "string" && md.user_name) ||
-            (data.user.email ? data.user.email.split("@")[0] : ""),
-          avatarUrl:
-            (typeof md.avatar_url === "string" && md.avatar_url) ||
-            (typeof md.picture === "string" && md.picture) ||
-            null,
+          displayName,
+          avatarUrl,
           provider:
             (typeof data.user.app_metadata?.provider === "string" && data.user.app_metadata.provider) ||
             "email",
           createdAt: data.user.created_at || null,
         };
+        if (cancelled) return;
         setProfile(next);
         setName(next.displayName);
+        setAvatarInput(next.avatarUrl || "");
       } catch (err: unknown) {
         if (!cancelled) {
           setError(err instanceof Error ? err.message : "Не удалось загрузить профиль");
@@ -78,17 +107,45 @@ export default function ProfilePage() {
 
   async function handleSave() {
     if (!profile) return;
-    const trimmed = name.trim();
-    if (!trimmed || trimmed === profile.displayName) return;
+    const trimmedName = name.trim();
+    const trimmedAvatar = avatarInput.trim();
+    if (!trimmedName) {
+      setError("Имя не может быть пустым");
+      return;
+    }
     setSaving(true);
     setError(null);
+    setSavedAt(null);
     try {
-      const { error } = await supabase.auth.updateUser({ data: { full_name: trimmed } });
-      if (error) throw error;
-      setProfile({ ...profile, displayName: trimmed });
+      // Сохраняем в нашу БД (Prisma profiles).
+      const updated = await nxPost<ProfileApiResponse>("/api/profile/credentials", {
+        display_name: trimmedName,
+        avatar_url: trimmedAvatar,
+      });
+
+      // Дублируем имя в supabase user_metadata.full_name, чтобы шапка
+      // (которая читает оттуда) тоже обновилась без перелогина.
+      try {
+        await supabase.auth.updateUser({
+          data: {
+            full_name: trimmedName,
+            ...(trimmedAvatar ? { avatar_url: trimmedAvatar } : {}),
+          },
+        });
+      } catch {
+        // не критично — БД сохранена
+      }
+
+      setProfile({
+        ...profile,
+        displayName: updated.display_name || trimmedName,
+        avatarUrl: updated.avatar_url || (trimmedAvatar || null),
+      });
+      setName(updated.display_name || trimmedName);
+      setAvatarInput(updated.avatar_url || trimmedAvatar);
       setSavedAt(Date.now());
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Не удалось сохранить имя");
+      setError(err instanceof Error ? err.message : "Не удалось сохранить профиль");
     } finally {
       setSaving(false);
     }
@@ -127,6 +184,8 @@ export default function ProfilePage() {
     );
   }
 
+  const previewAvatar = avatarInput.trim() || profile.avatarUrl;
+
   return (
     <div className="mx-auto max-w-3xl space-y-6 px-5 py-8 lg:px-8 lg:py-10">
       <div>
@@ -141,9 +200,9 @@ export default function ProfilePage() {
         <div className="flex items-center gap-4">
           <div className="relative shrink-0">
             <div className="h-20 w-20 rounded-full overflow-hidden bg-gradient-to-br from-accent to-accent-light flex items-center justify-center text-2xl font-bold text-white shadow-md">
-              {profile.avatarUrl ? (
+              {previewAvatar ? (
                 <img
-                  src={profile.avatarUrl}
+                  src={previewAvatar}
                   alt=""
                   className="w-full h-full object-cover"
                   referrerPolicy="no-referrer"
@@ -152,14 +211,16 @@ export default function ProfilePage() {
                 (profile.displayName || profile.email || "M").charAt(0).toUpperCase()
               )}
             </div>
-            {!profile.avatarUrl && (
+            {!previewAvatar && (
               <span className="absolute bottom-0 right-0 inline-flex h-6 w-6 items-center justify-center rounded-full bg-surface border border-border text-text-muted">
                 <Camera className="h-3 w-3" strokeWidth={2} aria-hidden="true" />
               </span>
             )}
           </div>
           <div className="min-w-0 flex-1">
-            <div className="text-base font-bold text-text truncate">{profile.displayName || "Без имени"}</div>
+            <div className="text-base font-bold text-text truncate">
+              {profile.displayName || "Без имени"}
+            </div>
             <div className="text-xs text-text-muted truncate flex items-center gap-1.5 mt-0.5">
               <Mail className="h-3 w-3" strokeWidth={2} aria-hidden="true" />
               {profile.email || "—"}
@@ -170,18 +231,35 @@ export default function ProfilePage() {
           </div>
         </div>
 
-        <div className="space-y-3 border-t border-border pt-5">
+        <div className="space-y-4 border-t border-border pt-5">
           <div>
-            <label className="block text-xs font-medium text-text-muted mb-1.5">Отображаемое имя</label>
+            <label className="block text-xs font-medium text-text-muted mb-1.5">
+              Отображаемое имя
+            </label>
             <input
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
               maxLength={64}
-              className="w-full px-4 py-2.5 bg-bg-elevated border border-border rounded-xl text-sm text-text placeholder:text-text-muted
-                         focus:outline-none focus:border-border-focus focus:ring-1 focus:ring-accent-light/25 transition-all"
+              className="w-full px-4 py-2.5 bg-bg-elevated border border-border rounded-xl text-sm text-text placeholder:text-text-muted focus:outline-none focus:border-border-focus focus:ring-1 focus:ring-accent-light/25 transition-all"
               placeholder="Как к вам обращаться"
             />
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium text-text-muted mb-1.5">
+              Ссылка на аватар
+            </label>
+            <input
+              type="url"
+              value={avatarInput}
+              onChange={(e) => setAvatarInput(e.target.value)}
+              className="w-full px-4 py-2.5 bg-bg-elevated border border-border rounded-xl text-sm text-text placeholder:text-text-muted focus:outline-none focus:border-border-focus focus:ring-1 focus:ring-accent-light/25 transition-all"
+              placeholder="https://..."
+            />
+            <p className="mt-1 text-[11px] text-text-muted">
+              Если вы вошли через Google, аватар подставлен автоматически. Можно заменить на любую ссылку или очистить поле.
+            </p>
           </div>
 
           {error && (
@@ -199,7 +277,7 @@ export default function ProfilePage() {
             <button
               type="button"
               onClick={handleSave}
-              disabled={saving || !name.trim() || name.trim() === profile.displayName}
+              disabled={saving || !name.trim()}
               className="inline-flex items-center gap-2 px-4 py-2 bg-accent hover:bg-accent-hover text-bg text-sm font-bold rounded-xl shadow-md transition-colors disabled:opacity-40 disabled:shadow-none"
             >
               {saving ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : null}

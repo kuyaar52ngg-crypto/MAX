@@ -90,6 +90,10 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       if (event === "SIGNED_OUT") {
         clearAllCredentials();
         router.replace("/login");
+      } else if (event === "USER_UPDATED") {
+        // Шапка читает имя/аватар из user_metadata — перечитаем сразу,
+        // чтобы изменения из /dashboard/profile применились без перелогина.
+        ensureSession();
       } else {
         // TOKEN_REFRESHED, INITIAL_SESSION, etc — only refresh JWT cache,
         // keep GREEN-API credentials intact

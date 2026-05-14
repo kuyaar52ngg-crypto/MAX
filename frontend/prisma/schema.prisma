@@ -12,6 +12,7 @@ model Profile {
   id              String   @id @default(uuid()) @db.Uuid
   user_id         String   @unique @db.Uuid
   display_name    String?
+  avatar_url      String?
   green_api_id    String?
   green_api_token String?
   green_api_url   String   @default("https://api.green-api.com")
@@ -43,6 +44,8 @@ model Recipient {
   phone        String
   status       String    @default("pending")
   message_id   String?
+  contact_data Json?
+  rendered_message String?
   sent_at      DateTime  @default(now())
   broadcast    Broadcast @relation(fields: [broadcast_id], references: [id])
   @@map("recipients")
