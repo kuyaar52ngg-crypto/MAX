@@ -10,7 +10,7 @@ import {
   UserCheck,
   X,
 } from "lucide-react";
-import { apiGet, apiPost, apiUpload } from "@/lib/api";
+import { apiGet, apiPost, apiUpload, getFlaskHeaders } from "@/lib/api";
 import { useBulkOperation } from "@/lib/hooks/useBulkOperation";
 import { PreFlightModal } from "@/components/anti-ban/PreFlightModal";
 import { StopButton } from "@/components/anti-ban/StopButton";
@@ -151,7 +151,22 @@ export default function ContactsPage() {
   async function handlePreflightConfirm() {
     setPreflightOpen(false);
     setMassResults([]);
-    await bulkOp.start({ phones: pendingPhones });
+    // GREEN-API credentials live in Supabase per user; the hook owns the POST
+    // + SSE, so we feed it the same JWT + X-Green-Api-* headers the rest of
+    // the dashboard uses (see lib/api.ts → getFlaskHeaders).
+    try {
+      const headers = await getFlaskHeaders();
+      await bulkOp.start(
+        { phones: pendingPhones },
+        { headers: headers as Record<string, string> },
+      );
+    } catch (err) {
+      // getFlaskHeaders throws when credentials are missing — surface the
+      // message via the hook by rethrowing the start with no headers, which
+      // will get the same backend 400 but at least populate bulkOp.error.
+      // Otherwise the modal would just silently close.
+      console.error("Не удалось собрать заголовки для запроса:", err);
+    }
   }
 
   function handlePreflightCancel() {
