@@ -122,6 +122,7 @@ export async function POST(req: NextRequest) {
       body: JSON.stringify({
         model,
         stream: false,
+        options: { temperature: 0.9 },
         messages: [
           { role: "system", content: systemPrompt },
           { role: "user", content: promptForModel },

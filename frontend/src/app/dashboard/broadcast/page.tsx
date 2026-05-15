@@ -207,6 +207,8 @@ export default function BroadcastPage() {
   function buildPerContactPrompt(
     brief: string,
     contact: BroadcastContact,
+    index: number,
+    total: number,
   ): string {
     const knownFields = Object.entries(contact)
       .filter(([k, v]) => v && k !== "phone" && !k.startsWith("_"))
@@ -220,18 +222,24 @@ export default function BroadcastPage() {
     );
     lines.push("");
     lines.push(
-      "Сгенерируй короткое уникальное маркетинговое сообщение лично для одного получателя.",
+      `Это сообщение №${index + 1} из ${total}. Каждое сообщение ОБЯЗАТЕЛЬНО должно отличаться от остальных по структуре, формулировкам и стилю.`,
     );
     lines.push(
-      "Не используй обращение по телефону. Если известно имя — обратись по имени.",
+      "Используй разные приветствия, разный порядок аргументов, разную длину предложений.",
     );
     lines.push(
-      "Текст должен отличаться по формулировкам от сообщений другим получателям.",
+      "Не используй обращение по номеру телефона. Если известно имя — обратись по имени.",
+    );
+    lines.push(
+      "Верни ТОЛЬКО текст сообщения, без пояснений.",
     );
     if (knownFields) {
       lines.push("");
       lines.push("Данные получателя:");
       lines.push(knownFields);
+    } else {
+      lines.push("");
+      lines.push("Данных о получателе нет — сделай текст универсальным, но уникальным по формулировке.");
     }
     return lines.join("\n");
   }
@@ -262,9 +270,9 @@ export default function BroadcastPage() {
       // the textarea so the user has something to tweak if they want.
       const systemPrompt = buildMarketerSystemPrompt(message);
       const settled = await Promise.allSettled(
-        contacts.map((contact) =>
+        contacts.map((contact, index) =>
           requestAiText(
-            buildPerContactPrompt(message, contact),
+            buildPerContactPrompt(message, contact, index, contacts.length),
             ctrl.signal,
             systemPrompt,
           ).then((text) => ({ phone: contact.phone, text: text.trim() })),
