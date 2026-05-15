@@ -141,11 +141,15 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           <Link
             href="/dashboard"
             aria-label="MAX Bot"
-            className={`group flex shrink-0 items-center justify-center rounded-xl bg-accent text-bg shadow-sm transition-all hover:-rotate-3 ${
+            className={`group flex shrink-0 items-center justify-center rounded-xl overflow-hidden transition-all hover:-rotate-3 ${
               scrolled ? "h-8 w-8" : "h-10 w-10"
             }`}
           >
-            <Bot className={scrolled ? "h-4 w-4" : "h-5 w-5"} strokeWidth={2.2} />
+            <img
+              src="/logo.png"
+              alt="MAX"
+              className="h-full w-full object-contain"
+            />
           </Link>
 
           <nav className="no-scrollbar flex min-w-0 justify-center gap-1.5 overflow-x-auto">

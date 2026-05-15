@@ -10,6 +10,10 @@ const inter = Inter({
 export const metadata: Metadata = {
   title: "MAX Messenger",
   description: "WhatsApp Business Dashboard — Рассылки, Мессенджер, Аналитика",
+  icons: {
+    icon: "/icon.png",
+    apple: "/icon.png",
+  },
 };
 
 export default function RootLayout({
