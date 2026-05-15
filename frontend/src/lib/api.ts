@@ -5,7 +5,7 @@
  * Flask requests include per-user GREEN-API credentials loaded from Supabase/Postgres.
  */
 
-import { createClient } from "@/lib/supabase/client";
+import { clearInvalidAuthSession, createClient, isInvalidRefreshTokenError } from "@/lib/supabase/client";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000";
 
@@ -26,8 +26,20 @@ async function getAuthHeaders(): Promise<HeadersInit> {
     return _cachedHeaders;
   }
   const supabase = createClient();
-  const { data: { session } } = await supabase.auth.getSession();
   const headers: HeadersInit = { "Content-Type": "application/json" };
+  let session = null;
+  try {
+    const { data } = await supabase.auth.getSession();
+    session = data.session;
+  } catch (error) {
+    if (isInvalidRefreshTokenError(error)) {
+      await clearInvalidAuthSession();
+      _cachedHeaders = headers;
+      _cacheExpiry = Date.now() + 1_000;
+      return headers;
+    }
+    throw error;
+  }
   if (session?.access_token) {
     headers["Authorization"] = `Bearer ${session.access_token}`;
   }

@@ -34,6 +34,8 @@ export async function GET(
       phone: r.phone,
       status: r.status,
       message_id: r.message_id,
+      contact_data: r.contact_data,
+      rendered_message: r.rendered_message,
       sent_at: r.sent_at,
       delivery_status: dsMap.get(r.message_id || "")?.status || "pending",
     }));

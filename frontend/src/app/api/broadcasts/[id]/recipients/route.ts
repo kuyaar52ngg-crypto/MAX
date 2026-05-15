@@ -16,6 +16,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const phone = String(body.phone || "").trim();
     const status = String(body.status || "error").trim();
     const message_id = body.message_id ? String(body.message_id) : null;
+    const rendered_message = body.rendered_message ? String(body.rendered_message) : null;
+    const contact_data = body.contact_data && typeof body.contact_data === "object" ? body.contact_data : null;
     if (!phone) return jsonResponse({ error: "phone required" }, { status: 400 });
 
     const broadcast = await prismaRetry(() => prisma.broadcast.findFirst({
@@ -25,7 +27,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     if (!broadcast) return jsonResponse({ error: "Broadcast not found" }, { status: 404 });
 
     const recipient = await prismaRetry(() => prisma.recipient.create({
-      data: { broadcast_id: BigInt(id), phone, status, message_id },
+      data: { broadcast_id: BigInt(id), phone, status, message_id, rendered_message, contact_data },
     }));
 
     return jsonResponse(recipient, { status: 201 });

@@ -9,6 +9,7 @@ import sys
 from flask import Flask, request, jsonify, Response, stream_with_context
 from flask_cors import CORS
 from dotenv import load_dotenv
+from werkzeug.utils import secure_filename
 
 from bot import MaxBot
 
@@ -107,6 +108,87 @@ def sse_push(data: dict):
     _push_all(_sse_clients, data)
 
 
+def clean_phone(value) -> str:
+    return ''.join(filter(str.isdigit, str(value or '')))
+
+
+def normalize_csv_field(value) -> str:
+    field = str(value or '').strip().lower()
+    replacements = {
+        'телефон': 'phone',
+        'номер': 'phone',
+        'номер телефона': 'phone',
+        'phone number': 'phone',
+        'mobile': 'phone',
+        'имя': 'name',
+        'город': 'city',
+        'компания': 'company',
+        'заказ': 'order',
+        'дата': 'date',
+    }
+    field = replacements.get(field, field)
+    field = field.replace(' ', '_').replace('-', '_')
+    return ''.join(ch for ch in field if ch.isalnum() or ch == '_') or 'field'
+
+
+def unique_field_names(fields):
+    result = []
+    counts = {}
+    for field in fields:
+        normalized = normalize_csv_field(field)
+        counts[normalized] = counts.get(normalized, 0) + 1
+        result.append(normalized if counts[normalized] == 1 else f"{normalized}_{counts[normalized]}")
+    return result
+
+
+def looks_like_header(row) -> bool:
+    normalized = [normalize_csv_field(cell) for cell in row]
+    return any(field == 'phone' or 'phone' in field for field in normalized)
+
+
+def build_contact(row, fields):
+    contact = {}
+    for field, value in zip(fields, row):
+        contact[field] = str(value or '').strip()
+    phone = clean_phone(contact.get('phone'))
+    if not phone:
+        for value in contact.values():
+            phone = clean_phone(value)
+            if 10 <= len(phone) <= 15:
+                break
+    if 10 <= len(phone) <= 15:
+        contact['phone'] = phone
+        return contact
+    return None
+
+
+def normalize_contacts(raw_contacts, phones_fallback=None):
+    """Привести `raw_contacts` (list[dict|str]) к списку валидных контактов.
+
+    Если ``raw_contacts`` не список — fallback к ``phones_fallback`` (список телефонов).
+    Возвращает список словарей с обязательным ключом ``phone``.
+    """
+    contacts = []
+    if isinstance(raw_contacts, list):
+        for item in raw_contacts:
+            if isinstance(item, dict):
+                contact = {str(k): str(v or '').strip() for k, v in item.items()}
+                phone = clean_phone(contact.get('phone'))
+                if 10 <= len(phone) <= 15:
+                    contact['phone'] = phone
+                    contacts.append(contact)
+            else:
+                phone = clean_phone(item)
+                if 10 <= len(phone) <= 15:
+                    contacts.append({'phone': phone})
+    else:
+        for p in (phones_fallback or []):
+            phone = clean_phone(p)
+            if 10 <= len(phone) <= 15:
+                contacts.append({'phone': phone})
+    return contacts
+
+
 # ── Статус инстанса ────────────────────────────────────────────────────────
 @app.route('/api/status')
 def api_status():
@@ -165,14 +247,44 @@ def api_upload_contacts():
     save_path = os.path.join(UPLOAD_FOLDER, 'contacts.csv')
     f.save(save_path)
     phones = []
+    contacts = []
+    fields = ['phone']
+    warnings = []
     with open(save_path, newline='', encoding='utf-8-sig') as csvfile:
         reader = csv.reader(csvfile)
-        for row in reader:
+        rows = [row for row in reader if any(str(cell).strip() for cell in row)]
+
+    if not rows:
+        return jsonify({'phones': [], 'contacts': [], 'fields': fields, 'count': 0, 'warnings': ['CSV файл пуст']})
+
+    if looks_like_header(rows[0]):
+        fields = unique_field_names(rows[0])
+        for index, row in enumerate(rows[1:], start=2):
+            contact = build_contact(row, fields)
+            if contact:
+                contacts.append(contact)
+                phones.append(contact['phone'])
+            else:
+                warnings.append(f'Строка {index}: телефон не найден')
+    else:
+        for row in rows:
             for cell in row:
-                cleaned = ''.join(filter(str.isdigit, cell))
+                cleaned = clean_phone(cell)
                 if 10 <= len(cleaned) <= 15:
                     phones.append(cleaned)
-    return jsonify({'phones': phones, 'count': len(phones)})
+                    contacts.append({'phone': cleaned})
+
+    unique_contacts = []
+    seen = set()
+    for contact in contacts:
+        phone = contact.get('phone')
+        if phone and phone not in seen:
+            seen.add(phone)
+            unique_contacts.append(contact)
+
+    phones = [contact['phone'] for contact in unique_contacts]
+    fields = sorted({key for contact in unique_contacts for key in contact.keys()} | set(fields))
+    return jsonify({'phones': phones, 'contacts': unique_contacts, 'fields': fields, 'count': len(unique_contacts), 'warnings': warnings})
 
 
 # ── Рассылка ──────────────────────────────────────────────────────────────
@@ -182,25 +294,91 @@ def api_broadcast():
     if _broadcast_active:
         return jsonify({'error': 'Рассылка уже запущена'}), 409
 
-    data       = request.get_json(force=True)
-    phones     = [p.strip() for p in data.get('phones', []) if p.strip()]
-    message    = data.get('message', '').strip()
-    delay      = float(data.get('delay', 3))
-    use_typing = bool(data.get('use_typing', False))
-    file_url   = data.get('file_url', '').strip() or None
-    file_name  = data.get('file_name', '').strip() or None
+    content_type = (request.content_type or '').lower()
+    is_multipart = content_type.startswith('multipart/')
 
-    if not phones:
+    uploaded_path = None        # для multipart — реальный путь в UPLOAD_FOLDER
+    uploaded_name = None
+    file_url = None             # legacy JSON-ветка
+    file_name = None
+
+    if is_multipart:
+        form = request.form
+        # contacts/phones приходят как JSON-строки
+        raw_contacts_str = form.get('contacts') or '[]'
+        phones_str = form.get('phones') or '[]'
+        try:
+            raw_contacts = json.loads(raw_contacts_str)
+        except (ValueError, TypeError):
+            return jsonify({'error': 'Поле "contacts" содержит некорректный JSON'}), 400
+        try:
+            phones_list = json.loads(phones_str)
+        except (ValueError, TypeError):
+            return jsonify({'error': 'Поле "phones" содержит некорректный JSON'}), 400
+        if not isinstance(phones_list, list):
+            phones_list = []
+        phones = [str(p).strip() for p in phones_list if str(p).strip()]
+
+        message = str(form.get('message') or '').strip()
+        try:
+            delay = float(form.get('delay') or 3)
+        except (ValueError, TypeError):
+            delay = 3.0
+        use_typing = (str(form.get('use_typing') or '').lower() in ('1', 'true', 'yes', 'on'))
+        broadcast_id = form.get('broadcast_id') or 1
+
+        f = request.files.get('file')
+        if f and f.filename:
+            os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+            safe_name = secure_filename(f.filename) or 'attachment'
+            uploaded_name = safe_name
+            uploaded_path = os.path.join(UPLOAD_FOLDER, f"bcast_{int(time.time())}_{safe_name}")
+            f.save(uploaded_path)
+    else:
+        data = request.get_json(force=True, silent=True) or {}
+        raw_contacts = data.get('contacts')
+        phones = [str(p).strip() for p in data.get('phones', []) if str(p).strip()]
+        message = str(data.get('message') or '').strip()
+        try:
+            delay = float(data.get('delay', 3))
+        except (ValueError, TypeError):
+            delay = 3.0
+        use_typing = bool(data.get('use_typing', False))
+        broadcast_id = data.get('broadcast_id') or 1
+        file_url = str(data.get('file_url') or '').strip() or None
+        file_name = str(data.get('file_name') or '').strip() or None
+        if file_url and not file_name:
+            file_name = file_url.rstrip('/').split('/')[-1] or 'attachment'
+
+    contacts = normalize_contacts(raw_contacts, phones)
+
+    has_attachment = bool(uploaded_path) if is_multipart else bool(file_url)
+
+    if not contacts:
+        if is_multipart and uploaded_path:
+            try:
+                os.remove(uploaded_path)
+            except OSError as exc:
+                logger.warning("Не удалось удалить временный файл %s: %s", uploaded_path, exc)
         return jsonify({'error': 'Список номеров пуст'}), 400
-    if not message and not file_url:
+    if not message and not has_attachment:
+        if is_multipart and uploaded_path:
+            try:
+                os.remove(uploaded_path)
+            except OSError as exc:
+                logger.warning("Не удалось удалить временный файл %s: %s", uploaded_path, exc)
         return jsonify({'error': 'Укажите сообщение или файл'}), 400
 
     try:
         request_bot = current_bot()
     except ValueError as exc:
+        if is_multipart and uploaded_path:
+            try:
+                os.remove(uploaded_path)
+            except OSError as cleanup_exc:
+                logger.warning("Не удалось удалить временный файл %s: %s", uploaded_path, cleanup_exc)
         return credentials_error_response(exc)
 
-    broadcast_id = data.get('broadcast_id') or 1
     counters = {'sent': 0, 'not_found': 0, 'failed': 0}
 
     def progress_cb(done, total, result):
@@ -208,11 +386,12 @@ def api_broadcast():
         if s == 'sent':          counters['sent']      += 1
         elif s == 'not_found':   counters['not_found'] += 1
         else:                    counters['failed']    += 1
-        pass
         sse_push({
             'done': done, 'total': total,
             'phone': result['phone'], 'status': s,
             'message_id': result.get('message_id'),
+            'rendered_message': result.get('rendered_message'),
+            'contact_data': result.get('contact_data'),
             'broadcast_id': broadcast_id
         })
 
@@ -220,21 +399,35 @@ def api_broadcast():
         global _broadcast_active
         _broadcast_active = True
         try:
-            request_bot.broadcast(
-                phones, message, delay=delay,
-                progress_cb=progress_cb,
-                use_typing=use_typing,
-                file_url=file_url, file_name=file_name
-            )
+            if is_multipart and uploaded_path:
+                request_bot.broadcast_with_uploaded_file(
+                    contacts, message, uploaded_path, uploaded_name,
+                    delay=delay, use_typing=use_typing,
+                    progress_cb=progress_cb,
+                )
+            else:
+                request_bot.broadcast(
+                    contacts, message, delay=delay,
+                    progress_cb=progress_cb,
+                    use_typing=use_typing,
+                    file_url=file_url, file_name=file_name,
+                )
         finally:
-            pass
-            sse_push({'done': len(phones), 'total': len(phones),
+            if is_multipart and uploaded_path:
+                try:
+                    os.remove(uploaded_path)
+                except OSError as exc:
+                    logger.warning(
+                        "Не удалось удалить временный файл %s: %s",
+                        uploaded_path, exc,
+                    )
+            sse_push({'done': len(contacts), 'total': len(contacts),
                       'finished': True, 'broadcast_id': broadcast_id,
                       **counters})
             _broadcast_active = False
 
     threading.Thread(target=run, daemon=True).start()
-    return jsonify({'broadcast_id': broadcast_id, 'total': len(phones)})
+    return jsonify({'broadcast_id': broadcast_id, 'total': len(contacts)})
 
 
 # ── SSE: прогресс рассылки ────────────────────────────────────────────────

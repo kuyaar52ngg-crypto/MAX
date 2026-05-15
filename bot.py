@@ -3,6 +3,8 @@ import sys
 import time
 import logging
 import requests
+import random
+import re
 from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
@@ -15,6 +17,18 @@ def get_data_path():
 env_path = os.path.join(get_data_path(), '.env')
 load_dotenv(dotenv_path=env_path)
 API_URL = os.getenv('GREEN_API_URL', 'https://api.green-api.com')
+
+
+def render_message_template(template, contact):
+    def replace_block(match):
+        value = match.group(1)
+        if '|' in value:
+            variants = [part.strip() for part in value.split('|')]
+            variants = [part for part in variants if part]
+            return random.choice(variants) if variants else ''
+        return str(contact.get(value.strip(), '') or '')
+
+    return re.sub(r'\{([^{}]+)\}', replace_block, template or '')
 
 
 class MaxBot:
@@ -177,21 +191,30 @@ class MaxBot:
         }
         return self._make_request('POST', 'sendFileByUrl', payload)
 
-    def send_file_by_upload(self, chat_id, file_path, caption=""):
-        """Загрузка и отправка файла с диска."""
+    def _upload_local_file(self, file_path):
+        """
+        Загрузка локального файла в GREEN-API (`uploadFile`).
+        Возвращает разобранный JSON-ответ (включая `urlFile`) или None при ошибке.
+        """
         file_name = os.path.basename(file_path)
-        # Сначала загружаем файл
         with open(file_path, 'rb') as f:
             files = {'file': (file_name, f)}
             upload_result = self._make_multipart_request('uploadFile', files)
         if not upload_result or 'urlFile' not in upload_result:
             logger.error(f"Ошибка загрузки файла: {file_path}")
             return None
+        return upload_result
+
+    def send_file_by_upload(self, chat_id, file_path, caption=""):
+        """Загрузка и отправка файла с диска."""
+        upload_result = self._upload_local_file(file_path)
+        if not upload_result:
+            return None
         # Затем отправляем по полученному URL
         return self.send_file_by_url(
             chat_id,
             upload_result['urlFile'],
-            file_name,
+            os.path.basename(file_path),
             caption
         )
 
@@ -246,12 +269,25 @@ class MaxBot:
         results = []
 
         for i, contact in enumerate(contacts):
+            contact_data = contact if isinstance(contact, dict) else {'phone': str(contact)}
+            phone = str(contact_data.get('phone', '')).strip()
+            # Если в контакте есть персональное поле `_message` (например,
+            # сгенерированный AI текст под этого получателя) — оно имеет
+            # приоритет над общим `message`. Это позволяет одной рассылкой
+            # отправить уникальный текст каждому контакту.
+            per_contact_template = contact_data.get('_message')
+            if isinstance(per_contact_template, str) and per_contact_template.strip():
+                effective_template = per_contact_template
+            else:
+                effective_template = message
+            rendered_message = render_message_template(effective_template, contact_data)
+
             # Ждём, пока очередь освободится
             while self.get_queue_size() >= max_queue:
                 logger.warning("Очередь заполнена. Ожидание 10 сек...")
                 time.sleep(10)
 
-            exist, chat_id = self.check_contact(contact)
+            exist, chat_id = self.check_contact(phone)
 
             if exist and chat_id:
                 # Имитация набора текста
@@ -261,24 +297,30 @@ class MaxBot:
 
                 # Отправка файла или текста
                 if file_url and file_name:
-                    response = self.send_file_by_url(chat_id, file_url, file_name, message)
+                    response = self.send_file_by_url(chat_id, file_url, file_name, rendered_message)
                 else:
-                    response = self.send_message(chat_id, message)
+                    response = self.send_message(chat_id, rendered_message)
 
                 if response and 'idMessage' in response:
                     status = 'sent'
                     msg_id = response['idMessage']
-                    logger.info(f"[+] {contact} → отправлено. ID: {msg_id}")
+                    logger.info(f"[+] {phone} → отправлено. ID: {msg_id}")
                 else:
                     status = 'error'
                     msg_id = None
-                    logger.error(f"[-] {contact} — ошибка отправки.")
+                    logger.error(f"[-] {phone} — ошибка отправки.")
             else:
                 status = 'not_found'
                 msg_id = None
-                logger.info(f"[?] {contact} — не найден в MAX.")
+                logger.info(f"[?] {phone} — не найден в MAX.")
 
-            result = {'phone': contact, 'status': status, 'message_id': msg_id}
+            result = {
+                'phone': phone,
+                'status': status,
+                'message_id': msg_id,
+                'rendered_message': rendered_message,
+                'contact_data': contact_data,
+            }
             results.append(result)
 
             if progress_cb:
@@ -287,6 +329,44 @@ class MaxBot:
             time.sleep(delay)
 
         return results
+
+    def broadcast_with_uploaded_file(self, contacts, message, file_path, file_name,
+                                     delay=2.0, use_typing=False, progress_cb=None):
+        """
+        Рассылка с локальным файлом: один раз загружает файл в GREEN-API
+        (`uploadFile`) и переиспользует полученный `urlFile` через `broadcast`.
+
+        При сбое загрузки файла (нет ответа или отсутствует `urlFile`)
+        для каждого получателя вызывается `progress_cb` со статусом `error`,
+        чтобы UI получил по событию на каждый контакт, как и при обычной
+        рассылке.
+        """
+        upload = self._upload_local_file(file_path)
+        if not upload or 'urlFile' not in upload:
+            total = len(contacts)
+            for i, c in enumerate(contacts):
+                contact_data = c if isinstance(c, dict) else {'phone': str(c)}
+                phone = str(contact_data.get('phone', '')).strip()
+                result = {
+                    'phone': phone,
+                    'status': 'error',
+                    'message_id': None,
+                    'rendered_message': message,
+                    'contact_data': c,
+                }
+                if progress_cb:
+                    progress_cb(i + 1, total, result)
+            return None
+
+        return self.broadcast(
+            contacts,
+            message,
+            delay=delay,
+            progress_cb=progress_cb,
+            use_typing=use_typing,
+            file_url=upload['urlFile'],
+            file_name=file_name,
+        )
 
     # ── УПРАВЛЕНИЕ ГРУППАМИ ───────────────────────────────────────────────────
 
