@@ -1629,6 +1629,84 @@ def api_bulk_operation_stop():
     }), 200
 
 
+@app.route('/api/bulk-operation/active', methods=['GET'])
+def api_bulk_operation_active():
+    """Вернуть текущую активную `Bulk_Operation` указанного `kind`.
+
+    Используется фронтендом при возврате на страницу проверки/рассылки,
+    чтобы понять, есть ли уже идущий worker, к которому нужно
+    переподключиться по SSE. Без этого UI после навигации между
+    `/dashboard/contacts` и `/dashboard/settings` теряет состояние
+    хука и показывает «Проверить» как доступную, в то время как
+    backend ещё держит `_check_active = True`.
+
+    Источник истины — `OperationRunRegistry`. Если реестр пуст для
+    указанного `kind`, возвращается ``{"active": false}``. Если есть —
+    возвращаются базовые поля операции из `operation_runs` (статус,
+    `processed`, `total`, `last_processed_index`), чтобы UI мог сразу
+    отрисовать прогресс-бар без ожидания первого SSE-события.
+
+    Query string: ``?kind=check`` или ``?kind=broadcast``.
+    """
+    kind = (request.args.get('kind') or '').strip().lower()
+    if kind not in ('check', 'broadcast'):
+        return jsonify(
+            {'error': "kind required (one of: 'check', 'broadcast')"}
+        ), 400
+
+    # Снимок реестра — поверхностная копия активных handle-ов.
+    handles = [h for h in registry.snapshot() if h.kind == kind]
+    if not handles:
+        return jsonify({'active': False}), 200
+
+    # На один kind может быть только один активный run в текущей
+    # реализации (глобальные `_check_active`/`_broadcast_active`
+    # запрещают параллельные старты). Берём первый.
+    handle = handles[0]
+    run_id = handle.run_id
+
+    # Подтянем прогресс из БД, чтобы UI мог сразу нарисовать прогресс-бар.
+    processed = 0
+    total = 0
+    last_index = -1
+    status_text = 'running'
+    try:
+        conn = db.get_conn()
+        try:
+            with conn:
+                row = conn.execute(
+                    "SELECT processed, total, last_processed_index, status "
+                    "FROM operation_runs WHERE id = ?",
+                    (run_id,),
+                ).fetchone()
+            if row is not None:
+                row_dict = dict(row)
+                processed = int(row_dict.get('processed') or 0)
+                total = int(row_dict.get('total') or 0)
+                last_index = int(row_dict.get('last_processed_index') or -1)
+                status_text = str(row_dict.get('status') or 'running')
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    except Exception:
+        logger.exception(
+            "api_bulk_operation_active: failed to load progress (run_id=%s)",
+            run_id,
+        )
+
+    return jsonify({
+        'active': True,
+        'operation_run_id': run_id,
+        'kind': handle.kind,
+        'status': status_text,
+        'processed': processed,
+        'total': total,
+        'last_processed_index': last_index,
+    }), 200
+
+
 @app.route('/api/bulk-operation/resume', methods=['POST'])
 def api_bulk_operation_resume():
     """Возобновить `Bulk_Operation` с ``last_processed_index + 1``.

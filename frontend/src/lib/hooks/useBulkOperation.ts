@@ -76,6 +76,23 @@ export interface BulkOperationApi {
   error: string | null;
   start: (payload: unknown, options?: StartOptions) => Promise<void>;
   stop: () => Promise<void>;
+  /**
+   * Подключиться к уже идущему worker-у по известному `operation_run_id`.
+   * Вызывается автоматически при монтировании, если в `sessionStorage`
+   * сохранён id из предыдущего `start()` (см. ключ
+   * `STORAGE_KEY_PREFIX + kind`). После подписки `active` становится
+   * `true`; если за `heartbeatTimeoutSeconds` от backend-а не приходит
+   * ни одного события — соединение закрывается, флаг сбрасывается, и
+   * запись в `sessionStorage` удаляется. Это даёт корректное поведение
+   * при возврате на страницу: если worker всё ещё жив — UI продолжит
+   * показывать прогресс; если завершился раньше — UI быстро очистится.
+   */
+  attach: (runId: number, options?: AttachOptions) => void;
+}
+
+export interface AttachOptions {
+  headers?: Record<string, string>;
+  heartbeatTimeoutSeconds?: number;
 }
 
 // Пути SSE-каналов прогресса (см. design.md, таблица «API»). Имена
@@ -97,6 +114,38 @@ const DEFAULT_HEARTBEAT_TIMEOUT_SECONDS = 60;
 // Endpoint остановки одинаков для обоих типов операций
 // (`POST /api/bulk-operation/stop`, см. design.md → API).
 const STOP_PATH = "/api/bulk-operation/stop";
+
+// Префикс ключа `sessionStorage`, в котором хранится `operation_run_id`
+// между навигациями внутри dashboard. Полный ключ — `bulkOp:check` или
+// `bulkOp:broadcast`. Используем `sessionStorage`, а не `localStorage`,
+// чтобы id очищался при закрытии вкладки и не "залипал" между
+// сессиями разных пользователей в одном браузере.
+const STORAGE_KEY_PREFIX = "bulkOp:";
+
+function readStoredRunId(kind: BulkKind): number | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.sessionStorage.getItem(STORAGE_KEY_PREFIX + kind);
+    if (!raw) return null;
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredRunId(kind: BulkKind, runId: number | null): void {
+  if (typeof window === "undefined") return;
+  try {
+    if (runId == null) {
+      window.sessionStorage.removeItem(STORAGE_KEY_PREFIX + kind);
+    } else {
+      window.sessionStorage.setItem(STORAGE_KEY_PREFIX + kind, String(runId));
+    }
+  } catch {
+    // Quota / privacy mode — silently ignore.
+  }
+}
 
 // Базовый адрес Flask backend. Совпадает с `API_BASE` в `lib/api.ts`,
 // чтобы SSE и POST уходили на тот же origin, а не на Next.js dev-сервер.
@@ -176,6 +225,72 @@ export function useBulkOperation(kind: BulkKind): BulkOperationApi {
     return () => cleanup();
   }, [cleanup]);
 
+  /**
+   * Открыть SSE-канал прогресса и подключить все обработчики (heartbeat,
+   * `state`, `progress`, `finished`, `error`). Используется и `start()`
+   * (после успешного POST на endpoint запуска), и `attach()` (для
+   * восстановления подписки на уже идущий worker после возврата на
+   * страницу).
+   */
+  const openSse = useCallback(() => {
+    const sse = new EventSource(resolveUrl(PROGRESS_PATH[kind]));
+    eventSourceRef.current = sse;
+    resetHeartbeat();
+
+    sse.onmessage = (event: MessageEvent) => {
+      // Любое полученное сообщение продлевает heartbeat-таймер
+      // (Requirement 5.7).
+      resetHeartbeat();
+
+      let data: Record<string, unknown> | null = null;
+      try {
+        data = JSON.parse(event.data) as Record<string, unknown>;
+      } catch {
+        return;
+      }
+      if (!data) return;
+
+      // Событие смены `Instance_State` (`StateMonitor`):
+      // `{ "type": "state", "value": "<state>" }`.
+      if (data.type === "state" && typeof data.value === "string") {
+        setState(data.value as InstanceState);
+        return;
+      }
+
+      // Прогресс батча: ожидаем как минимум `done`/`total` или
+      // финальное `finished: true`.
+      if (typeof data.done === "number" && typeof data.total === "number") {
+        setProgress(data as BulkProgress);
+      } else if (data.finished !== true) {
+        // Свободный формат события (например, `{phone, status}`):
+        // мерджим поверх предыдущего прогресса, чтобы не терять
+        // ранее накопленные `done`/`total`.
+        setProgress((prev) => ({
+          done: prev?.done ?? 0,
+          total: prev?.total ?? 0,
+          ...data,
+        }));
+      }
+
+      // Финальное событие — Requirement 5.6: `active = false` в
+      // течение 1 секунды (здесь — синхронно).
+      if (data.finished === true) {
+        if (typeof data.reason === "string" && data.reason !== "completed") {
+          setError(`Операция завершена: ${data.reason}`);
+        }
+        setActive(false);
+        writeStoredRunId(kind, null);
+        cleanup();
+      }
+    };
+
+    sse.onerror = () => {
+      // Закрытие соединения / сетевая ошибка — Requirement 5.6.
+      setActive(false);
+      cleanup();
+    };
+  }, [kind, resetHeartbeat, cleanup]);
+
   const start = useCallback(
     async (payload: unknown, options: StartOptions = {}): Promise<void> => {
       // Сбрасываем артефакты предыдущего запуска (если был).
@@ -242,67 +357,84 @@ export function useBulkOperation(kind: BulkKind): BulkOperationApi {
       }
       setOperationRunId(runId);
       operationRunIdRef.current = runId;
+      writeStoredRunId(kind, runId);
       setActive(true);
 
       // ── 3. Открыть SSE прогресса ────────────────────────────────────
-      const sse = new EventSource(resolveUrl(PROGRESS_PATH[kind]));
-      eventSourceRef.current = sse;
-      resetHeartbeat();
-
-      sse.onmessage = (event: MessageEvent) => {
-        // Любое полученное сообщение продлевает heartbeat-таймер
-        // (Requirement 5.7).
-        resetHeartbeat();
-
-        let data: Record<string, unknown> | null = null;
-        try {
-          data = JSON.parse(event.data) as Record<string, unknown>;
-        } catch {
-          return;
-        }
-        if (!data) return;
-
-        // Событие смены `Instance_State` (`StateMonitor`):
-        // `{ "type": "state", "value": "<state>" }`.
-        if (data.type === "state" && typeof data.value === "string") {
-          setState(data.value as InstanceState);
-          return;
-        }
-
-        // Прогресс батча: ожидаем как минимум `done`/`total` или
-        // финальное `finished: true`.
-        if (typeof data.done === "number" && typeof data.total === "number") {
-          setProgress(data as BulkProgress);
-        } else if (data.finished !== true) {
-          // Свободный формат события (например, `{phone, status}`):
-          // мерджим поверх предыдущего прогресса, чтобы не терять
-          // ранее накопленные `done`/`total`.
-          setProgress((prev) => ({
-            done: prev?.done ?? 0,
-            total: prev?.total ?? 0,
-            ...data,
-          }));
-        }
-
-        // Финальное событие — Requirement 5.6: `active = false` в
-        // течение 1 секунды (здесь — синхронно).
-        if (data.finished === true) {
-          if (typeof data.reason === "string" && data.reason !== "completed") {
-            setError(`Операция завершена: ${data.reason}`);
-          }
-          setActive(false);
-          cleanup();
-        }
-      };
-
-      sse.onerror = () => {
-        // Закрытие соединения / сетевая ошибка — Requirement 5.6.
-        setActive(false);
-        cleanup();
-      };
+      openSse();
     },
-    [kind, resetHeartbeat, cleanup],
+    [kind, resetHeartbeat, cleanup, openSse],
   );
+
+  /**
+   * Подключиться к уже идущему worker-у. См. JSDoc на `attach` в
+   * `BulkOperationApi`.
+   */
+  const attach = useCallback(
+    (runId: number, options: AttachOptions = {}): void => {
+      cleanup();
+      setError(null);
+      setProgress(null);
+      setState("unknown");
+      setOperationRunId(runId);
+      operationRunIdRef.current = runId;
+      writeStoredRunId(kind, runId);
+      const heartbeatSeconds =
+        options.heartbeatTimeoutSeconds ?? DEFAULT_HEARTBEAT_TIMEOUT_SECONDS;
+      heartbeatTimeoutMsRef.current = heartbeatSeconds * 1000;
+      setActive(true);
+      openSse();
+    },
+    [cleanup, openSse, kind],
+  );
+
+  // На монтировании — пробуем восстановить подписку, спросив у backend-а,
+  // есть ли активная операция этого `kind`. Источник истины —
+  // `OperationRunRegistry` на сервере (см. /api/bulk-operation/active),
+  // а не sessionStorage; sessionStorage используется только как fallback,
+  // когда backend временно недоступен.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const resp = await fetch(
+          resolveUrl(`/api/bulk-operation/active?kind=${kind}`),
+        );
+        if (cancelled) return;
+        if (!resp.ok) return;
+        const data = (await resp.json()) as {
+          active?: boolean;
+          operation_run_id?: number;
+          processed?: number;
+          total?: number;
+        };
+        if (!data?.active || typeof data.operation_run_id !== "number") {
+          // На сервере операции нет — чистим залипший id, если был.
+          writeStoredRunId(kind, null);
+          return;
+        }
+        if (cancelled) return;
+        attach(data.operation_run_id);
+        // Сразу заполняем прогресс-бар, чтобы UI не ждал первого SSE.
+        if (
+          typeof data.processed === "number" &&
+          typeof data.total === "number"
+        ) {
+          setProgress({ done: data.processed, total: data.total });
+        }
+      } catch {
+        // Backend недоступен — фолбэк на sessionStorage. Если worker уже
+        // завершился, heartbeat-таймер закроет SSE и сбросит флаг.
+        if (cancelled) return;
+        const storedId = readStoredRunId(kind);
+        if (storedId != null) attach(storedId);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const stop = useCallback(async (): Promise<void> => {
     const runId = operationRunIdRef.current;
@@ -320,10 +452,11 @@ export function useBulkOperation(kind: BulkKind): BulkOperationApi {
       // Сам `setActive(false)` произойдёт по SSE-событию
       // `{ finished: true, reason: "cancelled" }`, чтобы UI и backend
       // синхронизировались по одному источнику истины.
+      writeStoredRunId(kind, null);
     } catch (err) {
       setError(`Ошибка остановки: ${(err as Error).message}`);
     }
-  }, []);
+  }, [kind]);
 
-  return { active, progress, state, operationRunId, error, start, stop };
+  return { active, progress, state, operationRunId, error, start, stop, attach };
 }
