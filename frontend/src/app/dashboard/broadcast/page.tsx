@@ -54,6 +54,7 @@ import {
 import { PreFlightModal } from "@/components/anti-ban/PreFlightModal";
 import { StopButton } from "@/components/anti-ban/StopButton";
 import { useBulkOperation } from "@/lib/hooks/useBulkOperation";
+import { usePersistedState } from "@/lib/hooks/usePersistedState";
 import {
   type AntiBanConfig,
   DEFAULT_ANTI_BAN_CONFIG,
@@ -82,30 +83,47 @@ interface PendingBroadcast {
 
 export default function BroadcastPage() {
   // ── Canonical state (names per task 10.1) ────────────────────────────
-  const [contacts, setContacts] = useState<BroadcastContact[]>([]);
-  const [message, setMessage] = useState<string>("");
-  const [delay, setDelay] = useState<number>(3);
-  const [useTyping, setUseTyping] = useState<boolean>(false);
+  // Поля формы персистятся в sessionStorage, чтобы не терять черновик
+  // при навигации между страницами дашборда. Очищается при закрытии вкладки.
+  const [contacts, setContacts] = usePersistedState<BroadcastContact[]>(
+    "broadcast:contacts",
+    [],
+  );
+  const [message, setMessage] = usePersistedState<string>("broadcast:message", "");
+  const [delay, setDelay] = usePersistedState<number>("broadcast:delay", 3);
+  const [useTyping, setUseTyping] = usePersistedState<boolean>(
+    "broadcast:useTyping",
+    false,
+  );
+  // attachment не персистится: File нельзя сериализовать в JSON.
+  // Пользователь повторно прикрепит файл при возврате — это явное и
+  // понятное поведение, не ловушка.
   const [attachment, setAttachment] = useState<AttachmentState>({ kind: "none" });
   const [aiPending, setAiPending] = useState<boolean>(false);
   const [aiError, setAiError] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [progress, setProgress] = useState<ProgressEvent | null>(null);
   const [results, setResults] = useState<ResultRow[]>([]);
-  const [previewExpanded, setPreviewExpanded] = useState<boolean>(true); // Requirement 2.6
+  const [previewExpanded, setPreviewExpanded] = usePersistedState<boolean>(
+    "broadcast:previewExpanded",
+    true,
+  ); // Requirement 2.6
 
   // Map<phone, personalText> — заполняется кнопкой «Использовать AI», когда
   // в списке есть получатели. Каждому отправляется свой уникальный текст,
   // подмешиваемый к контакту через поле `_message` при запуске рассылки.
   // Сбрасывается, когда пользователь правит textarea вручную или меняет
   // список получателей.
-  const [personalizedMessages, setPersonalizedMessages] = useState<
+  const [personalizedMessages, setPersonalizedMessages] = usePersistedState<
     Record<string, string>
-  >({});
+  >("broadcast:personalizedMessages", {});
 
   // ── Auxiliary state (templates and CSV warnings) ─────────────────────
   const [templates, setTemplates] = useState<Template[]>([]);
-  const [csvWarnings, setCsvWarnings] = useState<string[]>([]);
+  const [csvWarnings, setCsvWarnings] = usePersistedState<string[]>(
+    "broadcast:csvWarnings",
+    [],
+  );
 
   // ── Anti-ban / pre-flight state (Requirements 5.1, 5.6, 6.1, 6.6) ────
   const [antiBanConfig, setAntiBanConfig] = useState<AntiBanConfig>(

@@ -18,14 +18,20 @@ import {
 import { apiGet, nxGet } from "@/lib/api";
 import { Broadcast, Recipient } from "@/lib/types";
 import { IncidentList, type Incident } from "@/components/anti-ban/IncidentList";
+import { usePersistedState } from "@/lib/hooks/usePersistedState";
 
 export default function HistoryPage() {
   const [broadcasts, setBroadcasts] = useState<Broadcast[]>([]);
   const [selected, setSelected] = useState<Broadcast | null>(null);
   const [recipients, setRecipients] = useState<Recipient[]>([]);
   const [loading, setLoading] = useState(true);
-  const [statusFilter, setStatusFilter] = useState("all");
-  const [search, setSearch] = useState("");
+  // Filters persist between navigations so the user keeps their search/filter
+  // context when switching to broadcast/contacts and back.
+  const [statusFilter, setStatusFilter] = usePersistedState<string>(
+    "history:statusFilter",
+    "all",
+  );
+  const [search, setSearch] = usePersistedState<string>("history:search", "");
 
   // Anti-Ban: инциденты (GET /api/incidents → Flask, см. requirements 8.3/8.4).
   const [incidents, setIncidents] = useState<Incident[]>([]);

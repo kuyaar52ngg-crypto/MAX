@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { apiGet, apiPost, apiUpload, getFlaskHeaders } from "@/lib/api";
 import { useBulkOperation } from "@/lib/hooks/useBulkOperation";
+import { usePersistedState } from "@/lib/hooks/usePersistedState";
 import { PreFlightModal } from "@/components/anti-ban/PreFlightModal";
 import { StopButton } from "@/components/anti-ban/StopButton";
 import {
@@ -36,14 +37,16 @@ export default function ContactsPage() {
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
-  const [checkPhone, setCheckPhone] = useState("");
+  const [checkPhone, setCheckPhone] = usePersistedState<string>("contacts:checkPhone", "");
   const [checkResult, setCheckResult] = useState<{ exists: boolean; chatId?: string } | null>(null);
   const [checking, setChecking] = useState(false);
 
-  // Mass check states
-  const [massInput, setMassInput] = useState("");
-  const [massPhones, setMassPhones] = useState<string[]>([]);
-  const [massResults, setMassResults] = useState<MassResult[]>([]);
+  // Mass check states — persisted between navigations so users don't
+  // lose typed/imported phone lists when they jump to settings or
+  // history (sessionStorage; cleared on tab close).
+  const [massInput, setMassInput] = usePersistedState<string>("contacts:massInput", "");
+  const [massPhones, setMassPhones] = usePersistedState<string[]>("contacts:massPhones", []);
+  const [massResults, setMassResults] = usePersistedState<MassResult[]>("contacts:massResults", []);
 
   // Anti-ban integration: PreFlight modal + bulk operation hook + StopButton.
   // The hook owns the SSE channel and the active/progress/error state, so we

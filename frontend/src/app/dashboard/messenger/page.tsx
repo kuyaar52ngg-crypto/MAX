@@ -20,6 +20,7 @@ import {
 import { apiGet, apiPost, apiUpload, nxPost } from "@/lib/api";
 import { Chat, ChatMessage } from "@/lib/types";
 import { GroupSettingsPanel } from "@/components/GroupSettingsPanel";
+import { usePersistedState } from "@/lib/hooks/usePersistedState";
 
 type ToastTone = "info" | "success" | "error";
 type Toast = { id: number; tone: ToastTone; text: string };
@@ -36,11 +37,23 @@ function isQuotaExceeded(message: string): boolean {
 
 export default function MessengerPage() {
   const [chats, setChats] = useState<Chat[]>([]);
-  const [activeChat, setActiveChat] = useState<Chat | null>(null);
+  // activeChat персистится по chatId, чтобы при возврате на страницу
+  // открывался тот же диалог. messages всё равно перезапрашиваются.
+  const [activeChat, setActiveChat] = usePersistedState<Chat | null>(
+    "messenger:activeChat",
+    null,
+  );
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [msgInput, setMsgInput] = useState("");
-  const [search, setSearch] = useState("");
-  const [activeTab, setActiveTab] = useState<"all" | "chats" | "groups">("all");
+  // Черновик ввода — самое важное для UX персистится между навигациями.
+  const [msgInput, setMsgInput] = usePersistedState<string>(
+    "messenger:msgInput",
+    "",
+  );
+  const [search, setSearch] = usePersistedState<string>("messenger:search", "");
+  const [activeTab, setActiveTab] = usePersistedState<"all" | "chats" | "groups">(
+    "messenger:activeTab",
+    "all",
+  );
   const [loadingChats, setLoadingChats] = useState(true);
   const [loadingMsgs, setLoadingMsgs] = useState(false);
   const [sending, setSending] = useState(false);

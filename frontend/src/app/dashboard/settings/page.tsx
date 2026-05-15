@@ -14,6 +14,7 @@ import {
 import { apiGet, apiPost, nxGet, nxPost, invalidateCredentialsCache } from "@/lib/api";
 import { AntiBanSettingsForm } from "@/components/anti-ban/AntiBanSettingsForm";
 import { AntiBanConfig, DEFAULT_ANTI_BAN_CONFIG } from "@/lib/anti-ban";
+import { usePersistedState } from "@/lib/hooks/usePersistedState";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000";
 
@@ -41,7 +42,10 @@ export default function SettingsPage() {
   });
   const [qrData, setQrData] = useState<string | null>(null);
   const [qrType, setQrType] = useState<string>("");
-  const [webhookUrl, setWebhookUrl] = useState("");
+  const [webhookUrl, setWebhookUrl] = usePersistedState<string>(
+    "settings:webhookUrl",
+    "",
+  );
   const [saving, setSaving] = useState(false);
   const [savingCredentials, setSavingCredentials] = useState(false);
   const [credentialsSaved, setCredentialsSaved] = useState(false);
