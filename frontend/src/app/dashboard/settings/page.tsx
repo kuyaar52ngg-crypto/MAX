@@ -8,9 +8,14 @@ import {
   QrCode,
   RefreshCw,
   Settings as SettingsIcon,
+  Shield,
   Wifi,
 } from "lucide-react";
 import { apiGet, apiPost, nxGet, nxPost, invalidateCredentialsCache } from "@/lib/api";
+import { AntiBanSettingsForm } from "@/components/anti-ban/AntiBanSettingsForm";
+import { AntiBanConfig, DEFAULT_ANTI_BAN_CONFIG } from "@/lib/anti-ban";
+
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000";
 
 interface AccountSettings {
   phone?: string;
@@ -42,8 +47,10 @@ export default function SettingsPage() {
   const [credentialsSaved, setCredentialsSaved] = useState(false);
   const [credentialsError, setCredentialsError] = useState<string | null>(null);
   const [instanceError, setInstanceError] = useState<string | null>(null);
+  const [antiBanConfig, setAntiBanConfig] = useState<AntiBanConfig | null>(null);
+  const [antiBanError, setAntiBanError] = useState<string | null>(null);
 
-  useEffect(() => { loadCredentials(); loadSettings(); }, []);
+  useEffect(() => { loadCredentials(); loadSettings(); loadAntiBanConfig(); }, []);
 
   async function loadCredentials() {
     try {
@@ -71,6 +78,18 @@ export default function SettingsPage() {
 
   async function loadSettings() {
     try { setSettings(await apiGet<AccountSettings>("/api/account-settings")); } catch { /* */ }
+  }
+
+  async function loadAntiBanConfig() {
+    setAntiBanError(null);
+    try {
+      const data = await apiGet<AntiBanConfig>("/api/anti-ban-config");
+      setAntiBanConfig(data);
+    } catch (err: unknown) {
+      // Fall back to defaults if the endpoint is unreachable so the form is still usable.
+      setAntiBanConfig(DEFAULT_ANTI_BAN_CONFIG);
+      setAntiBanError(err instanceof Error ? err.message : "Не удалось загрузить конфиг анти-бан защиты");
+    }
   }
 
   async function getQR() {
@@ -230,6 +249,33 @@ export default function SettingsPage() {
             {saving ? "..." : "Установить"}
           </button>
         </div>
+      </div>
+
+      {/* Anti-ban protection */}
+      <div className="settings-section glass rounded-2xl p-6 space-y-4">
+        <div>
+          <h3 className="text-sm font-semibold text-text-secondary flex items-center gap-2">
+            <Shield className="h-4 w-4" strokeWidth={2} aria-hidden="true" />
+            Анти-бан защита
+          </h3>
+          <p className="text-xs text-text-muted mt-1">
+            Параметры пауз, лимитов и watchdog для безопасной работы с GREEN-API
+          </p>
+        </div>
+        {antiBanError && (
+          <div className="px-4 py-3 bg-warning-bg border border-warning/20 rounded-xl text-warning text-sm">
+            {antiBanError}
+          </div>
+        )}
+        {antiBanConfig === null ? (
+          <div className="text-text-muted text-sm">Загрузка конфигурации...</div>
+        ) : (
+          <AntiBanSettingsForm
+            initialConfig={antiBanConfig}
+            endpoint={`${API_BASE}/api/anti-ban-config`}
+            onSaved={(fresh) => setAntiBanConfig(fresh)}
+          />
+        )}
       </div>
     </div>
   );

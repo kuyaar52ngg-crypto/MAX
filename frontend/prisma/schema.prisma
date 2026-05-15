@@ -113,3 +113,67 @@ model ContactCache {
   @@unique([user_id, chat_id])
   @@map("contacts_cache")
 }
+
+model AntiBanConfig {
+  id                              BigInt   @id @default(autoincrement())
+  user_id                         String   @unique @db.Uuid
+  delay_min                       Float    @default(3.0)
+  delay_max                       Float    @default(7.0)
+  batch_size                      Int      @default(50)
+  long_pause_every_n              Int      @default(50)
+  long_pause_seconds              Float    @default(60.0)
+  daily_check_limit               Int      @default(1000)
+  hourly_check_limit              Int      @default(200)
+  daily_message_limit             Int      @default(500)
+  broadcast_delay_min             Float    @default(5.0)
+  broadcast_jitter_max            Float    @default(3.0)
+  state_poll_interval_seconds     Int      @default(30)
+  watchdog_timeout_seconds        Int      @default(120)
+  watchdog_check_interval_seconds Int      @default(10)
+  sse_client_timeout_seconds      Int      @default(60)
+  max_retries                     Int      @default(5)
+  max_consecutive_429             Int      @default(3)
+  sliding_window_n                Int      @default(20)
+  sliding_window_t                Int      @default(60)
+  incident_history_limit          Int      @default(100)
+  backoff_base_seconds            Float    @default(5.0)
+  warn_on_zero_response_ratio     Boolean  @default(true)
+  response_ratio_window_hours     Int      @default(24)
+  response_ratio_min_outgoing     Int      @default(50)
+  updated_at                      DateTime @updatedAt
+
+  @@map("anti_ban_config")
+}
+
+model OperationRun {
+  id                   BigInt        @id @default(autoincrement())
+  user_id              String        @db.Uuid
+  kind                 String
+  status               String        @default("running")
+  total                Int
+  processed            Int           @default(0)
+  last_processed_index Int           @default(-1)
+  payload              Json
+  started_at           DateTime      @default(now())
+  finished_at          DateTime?
+  broadcast_id         BigInt?
+  reason               String?
+  incidents            IncidentLog[]
+
+  @@index([user_id, status])
+  @@index([user_id, started_at])
+  @@map("operation_runs")
+}
+
+model IncidentLog {
+  id               BigInt        @id @default(autoincrement())
+  user_id          String        @db.Uuid
+  operation_run_id BigInt?
+  kind             String
+  details          Json
+  created_at       DateTime      @default(now())
+  operation_run    OperationRun? @relation(fields: [operation_run_id], references: [id])
+
+  @@index([user_id, created_at])
+  @@map("incident_log")
+}

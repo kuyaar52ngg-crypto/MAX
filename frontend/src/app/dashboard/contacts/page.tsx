@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useEffect, useState } from "react";
 import {
   BarChart3,
   Check,
@@ -10,13 +10,26 @@ import {
   UserCheck,
   X,
 } from "lucide-react";
-import { apiGet, apiPost, apiSSE, apiUpload } from "@/lib/api";
+import { apiGet, apiPost, apiUpload } from "@/lib/api";
+import { useBulkOperation } from "@/lib/hooks/useBulkOperation";
+import { PreFlightModal } from "@/components/anti-ban/PreFlightModal";
+import { StopButton } from "@/components/anti-ban/StopButton";
+import {
+  AntiBanConfig,
+  DEFAULT_ANTI_BAN_CONFIG,
+} from "@/lib/anti-ban";
 
 interface Contact {
   id: string;
   name: string;
   chatId: string;
   type: string;
+}
+
+interface MassResult {
+  phone: string;
+  exists: boolean;
+  chatId?: string;
 }
 
 export default function ContactsPage() {
@@ -30,25 +43,51 @@ export default function ContactsPage() {
   // Mass check states
   const [massInput, setMassInput] = useState("");
   const [massPhones, setMassPhones] = useState<string[]>([]);
-  const [massChecking, setMassChecking] = useState(false);
-  const [massResults, setMassResults] = useState<{ phone: string; exists: boolean; chatId?: string }[]>([]);
-  const [massProgress, setMassProgress] = useState<{ done: number; total: number } | null>(null);
+  const [massResults, setMassResults] = useState<MassResult[]>([]);
+
+  // Anti-ban integration: PreFlight modal + bulk operation hook + StopButton.
+  // The hook owns the SSE channel and the active/progress/error state, so we
+  // no longer maintain a local `massChecking` flag, sseCloseRef, or
+  // `massProgress` snapshot — they're projected from `bulkOp` instead.
+  const bulkOp = useBulkOperation("check");
+  const [preflightOpen, setPreflightOpen] = useState(false);
+  const [pendingPhones, setPendingPhones] = useState<string[]>([]);
+  const [antiBanConfig, setAntiBanConfig] = useState<AntiBanConfig>(DEFAULT_ANTI_BAN_CONFIG);
 
   const [isAccordionOpen, setIsAccordionOpen] = useState(false);
-  const sseCloseRef = useRef<(() => void) | null>(null);
 
   useEffect(() => { loadContacts(); }, []);
 
-  // Закрываем активный SSE при размонтировании, иначе EventSource будет
-  // жить в фоне после перехода на другую страницу.
+  // Load anti-ban config on mount; fall back to defaults on failure so the
+  // PreFlight modal can still render meaningful ETA/risk values.
   useEffect(() => {
-    return () => {
-      if (sseCloseRef.current) {
-        sseCloseRef.current();
-        sseCloseRef.current = null;
-      }
-    };
+    let cancelled = false;
+    apiGet<AntiBanConfig>("/api/anti-ban-config")
+      .then((cfg) => {
+        if (!cancelled && cfg && typeof cfg === "object") setAntiBanConfig(cfg);
+      })
+      .catch(() => { /* keep defaults */ });
+    return () => { cancelled = true; };
   }, []);
+
+  // Each SSE progress event carries a per-phone result (`phone`, `exists`,
+  // `chatId`). The hook merges those into `bulkOp.progress` (replacing the
+  // previous one), so we accumulate them into a local `massResults` array
+  // here. Each `setProgress` call inside the hook creates a fresh object,
+  // so the effect fires exactly once per server event.
+  useEffect(() => {
+    const p = bulkOp.progress as
+      | (Record<string, unknown> & { phone?: unknown; exists?: unknown; chatId?: unknown })
+      | null;
+    if (!p) return;
+    if (typeof p.phone === "string" && typeof p.exists === "boolean") {
+      const chatId = typeof p.chatId === "string" ? p.chatId : undefined;
+      setMassResults((prev) => [
+        ...prev,
+        { phone: p.phone as string, exists: p.exists as boolean, chatId },
+      ]);
+    }
+  }, [bulkOp.progress]);
 
   async function loadContacts() {
     setLoading(true);
@@ -101,46 +140,22 @@ export default function ContactsPage() {
     } catch { /* */ }
   }
 
-  async function startMassCheck() {
-    if (!massPhones.length) return;
-    setMassChecking(true);
+  // Open the PreFlight modal with the currently-staged phones. The actual
+  // POST + SSE happens only after the user confirms the modal.
+  function openPreflight() {
+    if (!massPhones.length || bulkOp.active) return;
+    setPendingPhones(massPhones);
+    setPreflightOpen(true);
+  }
+
+  async function handlePreflightConfirm() {
+    setPreflightOpen(false);
     setMassResults([]);
-    setMassProgress(null);
+    await bulkOp.start({ phones: pendingPhones });
+  }
 
-    // На всякий случай закрываем предыдущий SSE, если он остался активен.
-    if (sseCloseRef.current) {
-      sseCloseRef.current();
-      sseCloseRef.current = null;
-    }
-
-    try {
-      await apiPost("/api/check-contacts-bulk", { phones: massPhones });
-      const close = apiSSE(
-        "/api/check-contacts/progress",
-        (data: any) => {
-          if (data.finished) {
-            setMassChecking(false);
-            if (sseCloseRef.current) {
-              sseCloseRef.current();
-              sseCloseRef.current = null;
-            }
-          } else {
-            setMassProgress({ done: data.done, total: data.total });
-            setMassResults((prev) => [
-              ...prev,
-              { phone: data.phone, exists: data.exists, chatId: data.chatId },
-            ]);
-          }
-        },
-        () => {
-          setMassChecking(false);
-          sseCloseRef.current = null;
-        },
-      );
-      sseCloseRef.current = close;
-    } catch {
-      setMassChecking(false);
-    }
+  function handlePreflightCancel() {
+    setPreflightOpen(false);
   }
 
   function downloadValidCSV() {
@@ -155,6 +170,8 @@ export default function ContactsPage() {
     window.URL.revokeObjectURL(url);
   }
 
+  const progressDone = typeof bulkOp.progress?.done === "number" ? bulkOp.progress.done : 0;
+  const progressTotal = typeof bulkOp.progress?.total === "number" ? bulkOp.progress.total : 0;
 
   return (
     <div className="p-6 lg:p-8 max-w-5xl mx-auto space-y-6">
@@ -241,24 +258,34 @@ export default function ContactsPage() {
               onClick={() => {
                 setMassPhones([]);
                 setMassResults([]);
-                setMassProgress(null);
               }}
-              disabled={(!massPhones.length && !massResults.length) || massChecking}
+              disabled={(!massPhones.length && !massResults.length) || bulkOp.active}
               className="px-4 py-2 bg-surface border border-border rounded-xl text-xs text-error hover:border-error/40 transition-colors disabled:opacity-40"
             >
               Очистить
             </button>
           </div>
-          <button
-            onClick={startMassCheck}
-            disabled={!massPhones.length || massChecking}
-            className="px-5 py-2 bg-accent hover:bg-accent-hover text-white text-sm font-medium rounded-xl transition-all disabled:opacity-50"
-          >
-            {massChecking ? "Проверка..." : `Проверить ${massPhones.length} номеров`}
-          </button>
+          <div className="flex items-center gap-3">
+            {bulkOp.active && (
+              <StopButton onStop={bulkOp.stop} active={bulkOp.active} />
+            )}
+            <button
+              onClick={openPreflight}
+              disabled={!massPhones.length || bulkOp.active}
+              className="px-5 py-2 bg-accent hover:bg-accent-hover text-white text-sm font-medium rounded-xl transition-all disabled:opacity-50"
+            >
+              {bulkOp.active ? "Проверка..." : `Проверить ${massPhones.length} номеров`}
+            </button>
+          </div>
         </div>
 
-        {massResults.length > 0 && (
+        {bulkOp.error && (
+          <div role="alert" className="px-4 py-3 rounded-xl text-sm bg-error-bg border border-error/20 text-error">
+            {bulkOp.error}
+          </div>
+        )}
+
+        {(massResults.length > 0 || bulkOp.active) && (
           <div className="mt-4 p-4 bg-bg/50 rounded-xl space-y-3 border border-border">
             <div className="flex justify-between items-center">
               <div className="text-sm font-medium">
@@ -273,9 +300,9 @@ export default function ContactsPage() {
                 Скачать валидные (CSV)
               </button>
             </div>
-            {massProgress && (
+            {progressTotal > 0 && (
               <div className="w-full h-1.5 bg-surface rounded-full overflow-hidden">
-                <div className="h-full bg-accent transition-all duration-300" style={{ width: `${(massProgress.done / massProgress.total) * 100}%` }} />
+                <div className="h-full bg-accent transition-all duration-300" style={{ width: `${(progressDone / progressTotal) * 100}%` }} />
               </div>
             )}
             <div className="max-h-40 overflow-y-auto space-y-1 text-xs">
@@ -302,6 +329,14 @@ export default function ContactsPage() {
         )}
       </div>
 
+      <PreFlightModal
+        open={preflightOpen}
+        kind="check"
+        total={pendingPhones.length}
+        config={antiBanConfig}
+        onConfirm={handlePreflightConfirm}
+        onCancel={handlePreflightCancel}
+      />
     </div>
   );
 }

@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { invalidateAuthCache, clearAllCredentials } from "@/lib/api";
+import { HeaderStateBadge } from "@/components/anti-ban/HeaderStateBadge";
 
 const NAV_ITEMS: { href: string; label: string; icon: LucideIcon }[] = [
   { href: "/dashboard", label: "Обзор", icon: BarChart3 },
@@ -179,7 +180,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             })}
           </nav>
 
-          <div className="relative justify-self-end">
+          <div className="relative flex items-center gap-2 justify-self-end">
+            <HeaderStateBadge />
             <button
               type="button"
               onClick={() => setAccountOpen((value) => !value)}

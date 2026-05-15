@@ -2,6 +2,8 @@
 
 import { useState, useEffect, useMemo } from "react";
 import {
+  Activity,
+  AlertTriangle,
   CheckCircle2,
   CircleHelp,
   ClipboardList,
@@ -13,8 +15,9 @@ import {
   Users,
   X,
 } from "lucide-react";
-import { nxGet } from "@/lib/api";
+import { apiGet, nxGet } from "@/lib/api";
 import { Broadcast, Recipient } from "@/lib/types";
+import { IncidentList, type Incident } from "@/components/anti-ban/IncidentList";
 
 export default function HistoryPage() {
   const [broadcasts, setBroadcasts] = useState<Broadcast[]>([]);
@@ -24,7 +27,13 @@ export default function HistoryPage() {
   const [statusFilter, setStatusFilter] = useState("all");
   const [search, setSearch] = useState("");
 
+  // Anti-Ban: инциденты (GET /api/incidents → Flask, см. requirements 8.3/8.4).
+  const [incidents, setIncidents] = useState<Incident[]>([]);
+  const [incidentsLoading, setIncidentsLoading] = useState(true);
+  const [incidentsError, setIncidentsError] = useState<string | null>(null);
+
   useEffect(() => { loadHistory(); }, []);
+  useEffect(() => { loadIncidents(); }, []);
 
   const filteredBroadcasts = useMemo(() => broadcasts.filter((broadcast) => {
     const matchesStatus = statusFilter === "all" || broadcast.status === statusFilter;
@@ -48,6 +57,23 @@ export default function HistoryPage() {
       const data = await nxGet<Broadcast[]>("/api/broadcasts");
       setBroadcasts(Array.isArray(data) ? data : []);
     } catch { /* */ } finally { setLoading(false); }
+  }
+
+  async function loadIncidents() {
+    setIncidentsLoading(true);
+    setIncidentsError(null);
+    try {
+      // Эндпойнт расположен на Flask backend и требует GREEN-API
+      // заголовков, поэтому используем apiGet (см. lib/api.ts).
+      const data = await apiGet<Incident[]>("/api/incidents");
+      setIncidents(Array.isArray(data) ? data : []);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Не удалось загрузить инциденты";
+      setIncidentsError(message);
+      setIncidents([]);
+    } finally {
+      setIncidentsLoading(false);
+    }
   }
 
   async function showDetails(b: Broadcast) {
@@ -227,6 +253,57 @@ export default function HistoryPage() {
           </div>
         </div>
       )}
+
+      {/* Активные операции (Requirement 7.6).
+          Карточки с кнопками «Стоп» (для `running`) и «Возобновить»
+          (для `paused`/`aborted`) появятся, когда backend начнёт
+          отдавать список `Operation_Run` пользователя. Пока такого
+          GET-эндпойнта нет, поэтому показываем пояснительный плейсхолдер;
+          активной операцией для текущей вкладки управляет хук
+          `useBulkOperation` на страницах /broadcast и /contacts. */}
+      <section aria-labelledby="active-operations-heading" className="space-y-3">
+        <div className="flex items-center gap-2">
+          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-bg-elevated text-text">
+            <Activity className="h-4 w-4" strokeWidth={2} />
+          </div>
+          <h2 id="active-operations-heading" className="text-lg font-semibold text-text">
+            Активные операции
+          </h2>
+        </div>
+        <div className="glass rounded-xl p-6 text-sm text-text-muted">
+          Активные и возобновляемые операции отображаются здесь, когда они
+          запущены. Управление текущей операцией доступно на страницах
+          «Рассылка» и «Контакты».
+          {/* TODO: подключить GET /api/operation-runs?status=running,paused,aborted
+              после реализации эндпойнта (см. design.md, Property 25). */}
+        </div>
+      </section>
+
+      {/* Инциденты (Requirements 8.3, 8.4) — список последних
+          incident_history_limit записей, сгруппированных по дате. */}
+      <section aria-labelledby="incidents-heading" className="space-y-3">
+        <div className="flex items-center gap-2">
+          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-warning-bg text-warning">
+            <AlertTriangle className="h-4 w-4" strokeWidth={2} />
+          </div>
+          <h2 id="incidents-heading" className="text-lg font-semibold text-text">
+            Инциденты
+          </h2>
+        </div>
+        <div className="glass rounded-xl p-4">
+          {incidentsLoading ? (
+            <div className="space-y-2">
+              {Array.from({ length: 3 }).map((_, i) => (
+                <div key={i} className="h-10 rounded-lg skeleton" />
+              ))}
+            </div>
+          ) : incidentsError ? (
+            <div className="text-sm text-error">Не удалось загрузить инциденты: {incidentsError}</div>
+          ) : (
+            <IncidentList items={incidents} />
+          )}
+        </div>
+      </section>
     </div>
   );
 }

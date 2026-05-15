@@ -11,28 +11,35 @@
  *                    "Начать рассылку" + progress)
  *   - right column : `Preview_Accordion`
  *
- * State is owned here and threaded into the blocks as props. AI generation
- * goes through `requestAiText` (task 3.1) — on error we set `aiError` and
- * leave the message text untouched (Requirement 4.8). Broadcast launches
- * via `postBroadcast` (task 8.1) and SSE progress is consumed through a
- * direct `EventSource` stored in a ref so the unmount-cleanup effect can
- * close it exactly once (Requirement 9.4).
+ * Anti-ban integration (task 25.2 / Requirements 5.1, 5.6, 6.1, 6.6):
+ *   - the centre-column "Начать рассылку" button no longer fires the
+ *     POST to Flask directly; it builds the multipart `FormData` payload,
+ *     stashes it into `pendingFormData`, and opens `<PreFlightModal>`;
+ *   - on confirm, `useBulkOperation("broadcast").start()` issues the POST
+ *     to `/api/broadcast` and owns the SSE lifecycle (heartbeat reset,
+ *     `{finished:true}` auto-reset, watchdog timeout — see
+ *     `useBulkOperation.ts`);
+ *   - `<StopButton>` next to the progress block calls
+ *     `useBulkOperation.stop()` which POSTs to `/api/bulk-operation/stop`
+ *     with the current `operation_run_id`.
  *
- * The legacy local-render helpers (`renderPreviewMessage`, `extractVariables`,
- * `countRandomBlocks`) and URL/file-name fields have been removed: the
- * message text is forwarded to the backend as-is (Requirement 4.9).
+ * The legacy local SSE setup, the inline `EventSource` ref and the
+ * `broadcasting` boolean state were replaced by the hook's `active`
+ * field. Per-recipient and finalize writes to the Next.js Prisma store
+ * are kept intact; they're now driven by an effect that watches
+ * `bulkOp.progress` and `bulkOp.active`.
  *
  * Validates: Requirements 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 2.6, 3.3, 3.7, 3.8,
  * 3.9, 4.5, 4.6, 4.7, 4.8, 4.9, 9.1, 9.2, 9.3, 9.4
+ *   plus (this task) 5.1, 5.6, 6.1, 6.6
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Megaphone } from "lucide-react";
 
-import { apiUpload, nxGet, nxPost } from "@/lib/api";
+import { apiGet, getFlaskHeaders, nxGet, nxPost } from "@/lib/api";
 import { requestAiText } from "@/lib/ai/client";
 import { buildMarketerSystemPrompt } from "@/lib/ai/marketer-prompt";
-import { postBroadcast } from "@/lib/broadcast/start";
 import type { BroadcastContact, Template } from "@/lib/types";
 import {
   MessageBlock,
@@ -44,6 +51,13 @@ import {
   type ProgressEvent,
   type ResultRow,
 } from "@/components/broadcast";
+import { PreFlightModal } from "@/components/anti-ban/PreFlightModal";
+import { StopButton } from "@/components/anti-ban/StopButton";
+import { useBulkOperation } from "@/lib/hooks/useBulkOperation";
+import {
+  type AntiBanConfig,
+  DEFAULT_ANTI_BAN_CONFIG,
+} from "@/lib/anti-ban";
 
 interface UploadContactsResponse {
   phones: string[];
@@ -53,8 +67,18 @@ interface UploadContactsResponse {
   warnings?: string[];
 }
 
-const FLASK_BASE =
-  process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000";
+/**
+ * Pending broadcast metadata stashed between the "Начать рассылку" click
+ * and the user's confirmation in `<PreFlightModal>`. We keep the FormData
+ * (multipart payload to `/api/broadcast`) plus the freshly created
+ * `broadcast_id` (Next.js Prisma row) so the post-confirm SSE handler can
+ * route per-recipient updates to `/api/broadcasts/:id/recipients`.
+ */
+interface PendingBroadcast {
+  formData: FormData;
+  broadcastId: number;
+  total: number;
+}
 
 export default function BroadcastPage() {
   // ── Canonical state (names per task 10.1) ────────────────────────────
@@ -66,7 +90,6 @@ export default function BroadcastPage() {
   const [aiPending, setAiPending] = useState<boolean>(false);
   const [aiError, setAiError] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
-  const [broadcasting, setBroadcasting] = useState<boolean>(false);
   const [progress, setProgress] = useState<ProgressEvent | null>(null);
   const [results, setResults] = useState<ResultRow[]>([]);
   const [previewExpanded, setPreviewExpanded] = useState<boolean>(true); // Requirement 2.6
@@ -84,37 +107,46 @@ export default function BroadcastPage() {
   const [templates, setTemplates] = useState<Template[]>([]);
   const [csvWarnings, setCsvWarnings] = useState<string[]>([]);
 
-  // ── Refs for resources that live across renders ───────────────────────
-  const sseRef = useRef<EventSource | null>(null);
-  const aiAbortRef = useRef<AbortController | null>(null);
+  // ── Anti-ban / pre-flight state (Requirements 5.1, 5.6, 6.1, 6.6) ────
+  const [antiBanConfig, setAntiBanConfig] = useState<AntiBanConfig>(
+    DEFAULT_ANTI_BAN_CONFIG,
+  );
+  const [preflightOpen, setPreflightOpen] = useState<boolean>(false);
+  const [pendingBroadcast, setPendingBroadcast] =
+    useState<PendingBroadcast | null>(null);
+  const bulkOp = useBulkOperation("broadcast");
 
-  // ── Initial template fetch ────────────────────────────────────────────
+  // ── Refs for resources that live across renders ───────────────────────
+  const aiAbortRef = useRef<AbortController | null>(null);
+  const broadcastIdRef = useRef<number | null>(null);
+  // Дедуп: SSE может прислать события с одинаковым `phone` повторно
+  // (например, при ретрае). В Next.js пишем только первое попадание,
+  // чтобы не плодить дубли в `Recipient`.
+  const seenRecipientsRef = useRef<Set<string>>(new Set());
+  const finalizedRunsRef = useRef<Set<number>>(new Set());
+
+  // ── Initial fetches ───────────────────────────────────────────────────
   useEffect(() => {
     nxGet<Template[]>("/api/templates")
       .then((res) => setTemplates(Array.isArray(res) ? res : []))
       .catch(() => {});
+    apiGet<AntiBanConfig>("/api/anti-ban-config")
+      .then((cfg) => setAntiBanConfig(cfg))
+      .catch(() => {
+        // Falls back to defaults so the modal can still compute ETA/risk.
+        setAntiBanConfig(DEFAULT_ANTI_BAN_CONFIG);
+      });
   }, []);
 
-  // ── Single unmount cleanup (Requirement 9.4) ──────────────────────────
+  // ── Single unmount cleanup ───────────────────────────────────────────
   useEffect(() => {
     return () => {
-      if (sseRef.current) {
-        sseRef.current.close();
-        sseRef.current = null;
-      }
       if (aiAbortRef.current) {
         aiAbortRef.current.abort();
         aiAbortRef.current = null;
       }
     };
   }, []);
-
-  function closeSse() {
-    if (sseRef.current) {
-      sseRef.current.close();
-      sseRef.current = null;
-    }
-  }
 
   // Pure setter wrapper: ручное редактирование textarea сбрасывает пакет
   // персональных сообщений, чтобы UI не показывал устаревшее превью.
@@ -148,10 +180,13 @@ export default function BroadcastPage() {
     const fd = new FormData();
     fd.append("file", file);
     try {
-      const data = await apiUpload<UploadContactsResponse>(
-        "/api/upload-contacts",
-        fd,
+      const headers = await getFlaskHeaders(false);
+      const res = await fetch(
+        `${process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000"}/api/upload-contacts`,
+        { method: "POST", headers, body: fd },
       );
+      if (!res.ok) return;
+      const data = (await res.json()) as UploadContactsResponse;
       if (Array.isArray(data.contacts)) {
         setContacts((prev) => {
           const map = new Map(prev.map((contact) => [contact.phone, contact]));
@@ -333,25 +368,25 @@ export default function BroadcastPage() {
     }
   }
 
-  // ── Broadcast launch (Requirements 9.1, 9.2, 3.7, 3.8) ───────────────
+  // ── Broadcast launch — handler called from MessageBlock's start button.
+  // Builds the multipart payload (Requirement 6.1: pre-flight before POST)
+  // and opens `<PreFlightModal>`. The actual POST + SSE happens in
+  // `confirmBroadcast` below.
   async function startBroadcast() {
     if (!contacts.length) return;
-    if (broadcasting) return;
+    if (bulkOp.active) return;
     if (message.trim() === "" && attachment.kind === "none") return;
 
-    setBroadcasting(true);
     setUploadError(null);
     setResults([]);
     setProgress(null);
+    seenRecipientsRef.current = new Set();
 
     try {
-      const file =
-        attachment.kind === "selected" ? attachment.file : null;
+      const file = attachment.kind === "selected" ? attachment.file : null;
 
-      // If the user generated per-recipient texts via the AI button, attach
-      // them to the contact records under `_message` — `bot.broadcast` reads
-      // that field and uses it as the per-recipient template, falling back
-      // to the shared `message` when missing.
+      // Per-recipient personalisation — keep the same shape `bot.broadcast`
+      // expects on the server (each contact carries an optional `_message`).
       const hasPersonalized = Object.keys(personalizedMessages).length > 0;
       const contactsToSend = hasPersonalized
         ? contacts.map((c) => {
@@ -360,6 +395,8 @@ export default function BroadcastPage() {
           })
         : contacts;
 
+      // 1. Создаём запись в Prisma `Broadcast` — нам нужен `id`, чтобы
+      //    обновлять `Recipient` по мере поступления SSE-событий.
       const broadcast = await nxPost<{ id: number }>("/api/broadcasts", {
         message: message.trim(),
         total: contacts.length,
@@ -367,72 +404,132 @@ export default function BroadcastPage() {
         file_name: file ? file.name : null,
         use_typing: useTyping,
       });
+      broadcastIdRef.current = broadcast.id;
 
-      await postBroadcast({
-        broadcast_id: broadcast.id,
-        message: message.trim(),
-        contacts: contactsToSend,
-        delay,
-        use_typing: useTyping,
-        attachment: file,
+      // 2. Собираем multipart `FormData` под `/api/broadcast` — формат
+      //    эквивалентен helper-у `postBroadcast`, но передадим его в
+      //    `useBulkOperation.start({ formData })`, чтобы хук сам владел
+      //    POST-ом и SSE.
+      const fd = new FormData();
+      fd.append("broadcast_id", String(broadcast.id));
+      fd.append("message", message.trim());
+      fd.append("contacts", JSON.stringify(contactsToSend));
+      fd.append("phones", JSON.stringify(contactsToSend.map((c) => c.phone)));
+      fd.append("delay", String(delay));
+      fd.append("use_typing", useTyping ? "1" : "0");
+      if (file) {
+        fd.append("file", file, file.name);
+      }
+
+      setPendingBroadcast({
+        formData: fd,
+        broadcastId: broadcast.id,
+        total: contacts.length,
       });
-
-      // If a previous SSE connection is somehow still open, close it.
-      closeSse();
-
-      const source = new EventSource(`${FLASK_BASE}/api/broadcast/progress`);
-      sseRef.current = source;
-
-      source.onmessage = (event) => {
-        let data: ProgressEvent | null = null;
-        try {
-          data = JSON.parse(event.data) as ProgressEvent;
-        } catch {
-          return;
-        }
-        if (!data) return;
-        setProgress(data);
-
-        if (data.phone && data.status) {
-          const row: ResultRow = {
-            phone: data.phone,
-            status: data.status,
-            rendered_message: data.rendered_message,
-          };
-          setResults((prev) => [...prev, row]);
-          nxPost(`/api/broadcasts/${broadcast.id}/recipients`, {
-            phone: data.phone,
-            status: data.status,
-            message_id: data.message_id,
-            rendered_message: data.rendered_message,
-            contact_data: data.contact_data,
-          }).catch(() => {});
-        }
-
-        if (data.finished) {
-          nxPost(`/api/broadcasts/${broadcast.id}/finish`, {
-            sent: data.sent || 0,
-            not_found: data.not_found || 0,
-            failed: data.failed || 0,
-          }).catch(() => {});
-          setBroadcasting(false);
-          closeSse();
-        }
-      };
-
-      source.onerror = () => {
-        setBroadcasting(false);
-        closeSse();
-      };
+      setPreflightOpen(true);
     } catch (err: unknown) {
       const messageText =
         err instanceof Error
           ? err.message
-          : "Не удалось запустить рассылку";
+          : "Не удалось подготовить рассылку";
       setUploadError(messageText);
-      setBroadcasting(false);
     }
   }
+
+  // ── PreFlightModal handlers (Requirement 6.1, 6.6) ───────────────────
+  async function handlePreflightConfirm() {
+    if (!pendingBroadcast) {
+      setPreflightOpen(false);
+      return;
+    }
+    setPreflightOpen(false);
+    try {
+      // multipart/form-data: Content-Type выставит браузер (boundary).
+      const headers = await getFlaskHeaders(false);
+      // `getFlaskHeaders(false)` уже снимает Content-Type, но JWT/GREEN-API
+      // заголовки нужны Flask-у.
+      await bulkOp.start(null, {
+        formData: pendingBroadcast.formData,
+        headers: headers as Record<string, string>,
+      });
+    } catch (err) {
+      // useBulkOperation сам пишет в свой `error`, но защитимся на случай
+      // отказа `getFlaskHeaders` (нет креденшелов).
+      setUploadError(
+        err instanceof Error
+          ? err.message
+          : "Не удалось запустить рассылку",
+      );
+    } finally {
+      setPendingBroadcast(null);
+    }
+  }
+
+  function handlePreflightCancel() {
+    // Requirement 6.6: закрыть модалку и не отправлять запрос.
+    setPreflightOpen(false);
+    setPendingBroadcast(null);
+  }
+
+  // ── SSE event forwarding to Next.js ──────────────────────────────────
+  // `useBulkOperation` владеет EventSource-ом и обновляет `bulkOp.progress`
+  // на каждом событии; здесь мы дублируем «полезную нагрузку» в
+  // локальные `progress`/`results` (для существующего UI MessageBlock) и
+  // отправляем per-recipient запись в Prisma.
+  useEffect(() => {
+    const data = bulkOp.progress;
+    if (!data) return;
+
+    // Сохраняем последний снимок как ProgressEvent для MessageBlock —
+    // структура ключей у обоих типов совместима.
+    setProgress(data as unknown as ProgressEvent);
+
+    const phone = typeof data.phone === "string" ? data.phone : null;
+    const status = data.status as ResultRow["status"] | undefined;
+    const broadcastId = broadcastIdRef.current;
+    if (phone && status && !seenRecipientsRef.current.has(phone)) {
+      seenRecipientsRef.current.add(phone);
+      const renderedMessage =
+        typeof data.rendered_message === "string"
+          ? data.rendered_message
+          : undefined;
+      setResults((prev) => [
+        ...prev,
+        { phone, status, rendered_message: renderedMessage },
+      ]);
+      if (broadcastId) {
+        nxPost(`/api/broadcasts/${broadcastId}/recipients`, {
+          phone,
+          status,
+          message_id: data.message_id,
+          rendered_message: renderedMessage,
+          contact_data: data.contact_data,
+        }).catch(() => {});
+      }
+    }
+  }, [bulkOp.progress]);
+
+  // Финализация: когда `bulkOp.active` уходит в `false` И у нас был старт
+  // (есть `broadcastIdRef.current`), пишем итоги в Prisma. Дедуп по
+  // `finalizedRunsRef` гарантирует один запрос на запуск даже при
+  // пере-рендерах.
+  useEffect(() => {
+    if (bulkOp.active) return;
+    const broadcastId = broadcastIdRef.current;
+    if (!broadcastId) return;
+    if (finalizedRunsRef.current.has(broadcastId)) return;
+    // Финализируем только если действительно был прогресс (иначе это
+    // первая отрисовка ещё до старта).
+    const data = bulkOp.progress;
+    if (!data) return;
+
+    finalizedRunsRef.current.add(broadcastId);
+    nxPost(`/api/broadcasts/${broadcastId}/finish`, {
+      sent: typeof data.sent === "number" ? data.sent : 0,
+      not_found: typeof data.not_found === "number" ? data.not_found : 0,
+      failed: typeof data.failed === "number" ? data.failed : 0,
+    }).catch(() => {});
+  }, [bulkOp.active, bulkOp.progress]);
 
   function handleAttachmentRetry() {
     // Re-attempt the broadcast with the same attachment (Requirement 3.9).
@@ -447,7 +544,7 @@ export default function BroadcastPage() {
 
   // Parent-level gate: at least one recipient must be configured. The
   // "message empty AND attachment none → disabled" rule is applied locally
-  // inside `MessageBlock` and the `broadcasting` flag is AND-ed there too.
+  // inside `MessageBlock` and the `bulkOp.active` flag is AND-ed there too.
   const canStart = contacts.length > 0;
 
   // Превью использует персональные сообщения, если они есть: каждый
@@ -460,6 +557,11 @@ export default function BroadcastPage() {
       return personal ? { ...c, _message: personal } : c;
     });
   }, [contacts, personalizedMessages]);
+
+  // Total used by `<PreFlightModal>` — берём из подготовленного payload-а,
+  // чтобы число совпадало с тем, что уйдёт на сервер, даже если
+  // пользователь успеет отредактировать список перед подтверждением.
+  const preflightTotal = pendingBroadcast?.total ?? contacts.length;
 
   // ── Render ───────────────────────────────────────────────────────────
   return (
@@ -475,6 +577,15 @@ export default function BroadcastPage() {
           Массовая отправка сообщений
         </p>
       </header>
+
+      {bulkOp.error && (
+        <div
+          role="alert"
+          className="rounded-xl border border-error/30 bg-error-bg px-4 py-3 text-sm text-error"
+        >
+          {bulkOp.error}
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-[minmax(280px,360px)_minmax(0,1fr)_minmax(280px,400px)] gap-6">
         {/* Left column — Recipients + Settings */}
@@ -494,7 +605,7 @@ export default function BroadcastPage() {
         </div>
 
         {/* Centre column — Message + start + progress */}
-        <div>
+        <div className="space-y-3">
           <MessageBlock
             message={message}
             onMessageChange={handleMessageChange}
@@ -512,12 +623,21 @@ export default function BroadcastPage() {
             templates={templates}
             onTemplateSelect={(text) => setMessage(text)}
             canStart={canStart}
-            broadcasting={broadcasting}
+            broadcasting={bulkOp.active}
             progressPct={progressPct}
             onStart={startBroadcast}
             progress={progress}
             results={results}
           />
+          {bulkOp.active && (
+            <div className="flex justify-end">
+              <StopButton
+                onStop={bulkOp.stop}
+                active={bulkOp.active}
+                label="Остановить рассылку"
+              />
+            </div>
+          )}
         </div>
 
         {/* Right column — Preview accordion */}
@@ -530,6 +650,15 @@ export default function BroadcastPage() {
           />
         </div>
       </div>
+
+      <PreFlightModal
+        open={preflightOpen}
+        kind="broadcast"
+        total={preflightTotal}
+        config={antiBanConfig}
+        onConfirm={handlePreflightConfirm}
+        onCancel={handlePreflightCancel}
+      />
     </div>
   );
 }

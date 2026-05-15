@@ -65,7 +65,16 @@ async function getGreenCredentials(): Promise<GreenCredentials | null> {
   return credentials;
 }
 
-async function getFlaskHeaders(json = true): Promise<HeadersInit> {
+/**
+ * Build the Flask request headers (Authorization + GREEN-API credentials).
+ * Exposed for hooks/components that issue their own `fetch` to Flask
+ * (e.g. `useBulkOperation`, which needs the same `X-Green-Api-*` headers
+ * as `apiUpload` but cannot reuse it because it owns the SSE lifecycle).
+ *
+ * Pass `json = false` for `multipart/form-data` requests so the browser
+ * sets the boundary itself.
+ */
+export async function getFlaskHeaders(json = true): Promise<HeadersInit> {
   const authHeaders = await getAuthHeaders();
   const headers: Record<string, string> = { ...(authHeaders as Record<string, string>) };
   if (!json) {

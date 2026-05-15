@@ -46,3 +46,9 @@ fix_html.py
 build_exe.bat
 qr_code.html
 Number.csv
+
+# Local-only files
+ТЗ.md
+logs.*.json
+screencapture-*.png
+Vector.png

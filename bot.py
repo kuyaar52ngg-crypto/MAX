@@ -1,13 +1,40 @@
 import os
 import sys
+import threading
 import time
 import logging
 import requests
 import random
 import re
+from typing import Callable, Optional
 from dotenv import load_dotenv
 
+from anti_ban.rate_limiter import RateLimiter
+
 logger = logging.getLogger(__name__)
+
+
+class QuotaExceededError(Exception):
+    """Raised on GREEN-API HTTP 466 (quota exceeded).
+
+    The caller (Bulk_Operation worker) should abort the operation
+    immediately and log a ``quota_466`` incident — see Requirement 4.4
+    of the ``anti-ban-protection`` spec.
+    """
+
+
+class Rate429Error(Exception):
+    """Raised when consecutive HTTP 429 retries are exhausted.
+
+    Attribute ``retry_count`` holds the number of retries that already
+    happened (0-based). The caller can use it to decide whether to abort
+    the run as ``aborted`` and write a ``rate_limit_429`` incident — see
+    Requirements 4.2 and 4.3 of the ``anti-ban-protection`` spec.
+    """
+
+    def __init__(self, retry_count: int) -> None:
+        self.retry_count = retry_count
+        super().__init__(f"HTTP 429 retried {retry_count} times")
 
 def get_data_path():
     if getattr(sys, 'frozen', False):
@@ -40,21 +67,100 @@ class MaxBot:
         self.api_token = api_token
         self.base_url = f"{API_URL}/waInstance{self.id_instance}"
 
-    def _make_request(self, method, endpoint, payload=None, timeout=15):
+    def _make_request(
+        self,
+        method,
+        endpoint,
+        payload=None,
+        timeout=15,
+        *,
+        rate_limiter: Optional[RateLimiter] = None,
+        rate_limit_kind: str = "check",
+    ):
+        """Выполнить HTTP-запрос к GREEN-API с опциональным rate limiting.
+
+        Args:
+            method: ``"GET"`` / ``"POST"`` / ``"DELETE"``.
+            endpoint: путь после ``waInstance{id}/``.
+            payload: тело JSON для POST.
+            timeout: таймаут одного HTTP-запроса.
+            rate_limiter: опциональный :class:`RateLimiter`. Если задан,
+                перед каждым HTTP-запросом вызывается ``acquire(kind=...)``,
+                после успешного ответа — ``record_request()``. На HTTP 429
+                выполняется ``on_http_429(retry)`` и повтор до
+                ``config.max_retries``; при исчерпании повторов
+                поднимается :class:`Rate429Error`. На HTTP 466 поднимается
+                :class:`QuotaExceededError`. Если ``rate_limiter is None``,
+                поведение совместимо с прежним: 466 транслируется в
+                ``QuotaExceededError`` (чтобы caller мог корректно
+                остановить операцию), остальные ошибки логируются и
+                возвращается ``None``.
+            rate_limit_kind: ``"check"`` для ``checkAccount``-подобных
+                запросов или ``"broadcast"`` для отправки сообщений.
+
+        Returns:
+            Распарсенный JSON-ответ или ``None`` при сетевой/HTTP ошибке
+            (кроме 429/466, см. выше).
+        """
         url = f"{self.base_url}/{endpoint}/{self.api_token}"
-        try:
-            if method == 'POST':
-                response = requests.post(url, json=payload, timeout=timeout)
-            else:
-                response = requests.get(url, timeout=timeout)
-            response.raise_for_status()
+        max_retries = (
+            rate_limiter._config.max_retries
+            if rate_limiter is not None
+            else 5
+        )
+
+        retry = 0
+        while True:
+            if rate_limiter is not None:
+                rate_limiter.acquire(kind=rate_limit_kind)
+            try:
+                if method == 'POST':
+                    response = requests.post(url, json=payload, timeout=timeout)
+                else:
+                    response = requests.get(url, timeout=timeout)
+                response.raise_for_status()
+            except requests.exceptions.HTTPError as e:
+                status = e.response.status_code if e.response is not None else None
+                # HTTP 466 — превышение квоты GREEN-API: операцию
+                # необходимо остановить немедленно (Requirement 4.4).
+                if status == 466:
+                    logger.error(
+                        f"HTTP 466 (quota exceeded) [{endpoint}]: "
+                        f"{e.response.text}"
+                    )
+                    raise QuotaExceededError(
+                        f"GREEN-API quota exceeded on {endpoint}: "
+                        f"{e.response.text}"
+                    ) from e
+                # HTTP 429 — rate limit. Backoff + retry до max_retries
+                # (Requirement 4.1, 4.2).
+                if status == 429:
+                    logger.warning(
+                        f"HTTP 429 [{endpoint}], retry {retry + 1}/"
+                        f"{max_retries}"
+                    )
+                    if rate_limiter is not None:
+                        if retry >= max_retries:
+                            raise Rate429Error(retry_count=retry) from e
+                        rate_limiter.on_http_429(retry)
+                        retry += 1
+                        continue
+                    # Без rate_limiter сохраняем прежнее поведение —
+                    # просто логируем и возвращаем None.
+                    logger.error(
+                        f"HTTP Ошибка [{endpoint}]: {e.response.text}"
+                    )
+                    return None
+                logger.error(f"HTTP Ошибка [{endpoint}]: {e.response.text}")
+                return None
+            except requests.exceptions.RequestException as e:
+                logger.error(f"Сетевая ошибка [{endpoint}]: {e}")
+                return None
+
+            # Успешный ответ — регистрируем слот в sliding window.
+            if rate_limiter is not None:
+                rate_limiter.record_request()
             return response.json()
-        except requests.exceptions.HTTPError as e:
-            logger.error(f"HTTP Ошибка [{endpoint}]: {e.response.text}")
-            return None
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Сетевая ошибка [{endpoint}]: {e}")
-            return None
 
     def _make_multipart_request(self, endpoint, files, data=None):
         """POST-запрос с multipart/form-data (для загрузки файлов)."""
@@ -117,13 +223,39 @@ class MaxBot:
 
     # ── СЕРВИСНЫЕ ФУНКЦИИ ────────────────────────────────────────────────────
 
-    def check_contact(self, phone_number):
-        """
-        Проверка наличия аккаунта MAX по номеру телефона.
-        Возвращает (exist: bool, chatId: str|None).
+    def check_contact(
+        self,
+        phone_number,
+        *,
+        rate_limiter: Optional[RateLimiter] = None,
+        rate_limit_kind: str = "check",
+    ):
+        """Проверка наличия аккаунта MAX по номеру телефона.
+
+        Args:
+            phone_number: номер телефона (строка из цифр).
+            rate_limiter: опциональный :class:`RateLimiter`. Если задан,
+                пробрасывается в ``_make_request`` для обеспечения
+                поведенческого rate-limiting (Requirement 1.2). При HTTP 466
+                будет поднят :class:`QuotaExceededError`, при исчерпании
+                ретраев на HTTP 429 — :class:`Rate429Error`. Без
+                ``rate_limiter`` поведение совместимо с прежним: 466
+                по-прежнему транслируется в ``QuotaExceededError`` (см.
+                ``_make_request``), сетевые/прочие HTTP ошибки приводят к
+                ответу ``(False, None)``.
+            rate_limit_kind: ``"check"`` (по умолчанию) или ``"broadcast"``
+                для случая, когда ``checkAccount`` вызывается в рамках
+                рассылки.
+
+        Returns:
+            Кортеж ``(exist: bool, chatId: str | None)``.
         """
         payload = {"phoneNumber": int(phone_number)}
-        result = self._make_request('POST', 'checkAccount', payload)
+        result = self._make_request(
+            'POST', 'checkAccount', payload,
+            rate_limiter=rate_limiter,
+            rate_limit_kind=rate_limit_kind,
+        )
         if result:
             return result.get('exist', False), result.get('chatId')
         return False, None
@@ -258,17 +390,65 @@ class MaxBot:
 
     def broadcast(self, contacts, message, delay=2.0, max_queue=100,
                   progress_cb=None, use_typing=False,
-                  file_url=None, file_name=None):
-        """
-        Рассылка с контролем очереди.
-        use_typing — имитировать набор текста перед отправкой.
-        file_url / file_name — если указаны, отправлять файл вместо текста.
-        progress_cb(done, total, result) — колбэк прогресса.
+                  file_url=None, file_name=None,
+                  *,
+                  rate_limiter: Optional[RateLimiter] = None,
+                  cancel_event: Optional[threading.Event] = None,
+                  progress_cb_after_each: Optional[
+                      Callable[[int, dict], None]
+                  ] = None):
+        """Рассылка с контролем очереди и опциональной анти-бан-защитой.
+
+        Args:
+            contacts: список контактов (dict с ключом ``phone`` или строка).
+            message: общий шаблон текста; может быть переопределён полем
+                ``_message`` отдельного контакта.
+            delay: пользовательский delay между сообщениями. Игнорируется,
+                если в ``rate_limiter`` задан более высокий floor —
+                см. Requirement 2.1, 2.2.
+            max_queue: размер очереди, при превышении worker ждёт.
+            progress_cb: legacy-колбэк ``progress_cb(done, total, result)``.
+            use_typing: имитировать набор текста перед отправкой.
+            file_url / file_name: если заданы, отправлять файл вместо
+                текста.
+            rate_limiter: опциональный :class:`RateLimiter`. Когда задан,
+                пробрасывается во все вызовы ``_make_request`` (включая
+                ``checkAccount``, ``sendMessage``, ``sendFileByUrl``,
+                ``uploadFile``) с ``rate_limit_kind="broadcast"`` —
+                Requirement 2.1.
+            cancel_event: опциональный :class:`threading.Event`. Перед
+                обработкой каждого контакта worker проверяет
+                ``cancel_event.is_set()`` и при установленном флаге
+                прекращает обработку — Requirement 5.2.
+            progress_cb_after_each: опциональный колбэк
+                ``(index, result_dict) -> None``, вызывается после
+                обработки каждого контакта (``index`` 0-based). Не
+                заменяет ``progress_cb``, а дополняет его — нужен
+                ``Bulk_Operation`` worker'у в ``app.py`` для записи
+                прогресса в ``OperationRun`` и heartbeat.
+
+        Returns:
+            Список словарей ``{phone, status, message_id,
+            rendered_message, contact_data}`` по обработанным контактам
+            (включая прерванные по ``cancel_event``).
+
+        Raises:
+            QuotaExceededError: при HTTP 466 от GREEN-API
+                (Requirement 4.4). Прокидывается наружу для caller'а.
+            Rate429Error: когда исчерпан лимит ретраев на HTTP 429
+                (Requirement 4.3). Прокидывается наружу.
         """
         logger.info(f"Рассылка: {len(contacts)} контактов.")
         results = []
 
         for i, contact in enumerate(contacts):
+            # Requirement 5.2: проверка отмены перед каждым контактом.
+            if cancel_event is not None and cancel_event.is_set():
+                logger.info(
+                    f"Рассылка отменена на контакте {i}/{len(contacts)}"
+                )
+                break
+
             contact_data = contact if isinstance(contact, dict) else {'phone': str(contact)}
             phone = str(contact_data.get('phone', '')).strip()
             # Если в контакте есть персональное поле `_message` (например,
@@ -286,20 +466,58 @@ class MaxBot:
             while self.get_queue_size() >= max_queue:
                 logger.warning("Очередь заполнена. Ожидание 10 сек...")
                 time.sleep(10)
+                if cancel_event is not None and cancel_event.is_set():
+                    logger.info(
+                        "Рассылка отменена во время ожидания очереди"
+                    )
+                    break
+            if cancel_event is not None and cancel_event.is_set():
+                break
 
-            exist, chat_id = self.check_contact(phone)
+            # Проверка существования контакта. Используем низкоуровневый
+            # _make_request, чтобы пробросить rate_limiter с
+            # kind="broadcast" — сам факт обращения к GREEN-API учитывается
+            # в едином sliding-window рассылки (Requirement 2.1).
+            check_resp = self._make_request(
+                'POST', 'checkAccount',
+                {"phoneNumber": int(phone)} if phone else None,
+                rate_limiter=rate_limiter,
+                rate_limit_kind="broadcast",
+            )
+            exist = bool(check_resp.get('exist')) if check_resp else False
+            chat_id = check_resp.get('chatId') if check_resp else None
 
             if exist and chat_id:
                 # Имитация набора текста
                 if use_typing:
-                    self.send_typing(chat_id)
+                    self._make_request(
+                        'POST', 'sendTyping',
+                        {"chatId": chat_id},
+                        rate_limiter=rate_limiter,
+                        rate_limit_kind="broadcast",
+                    )
                     time.sleep(1.5)
 
                 # Отправка файла или текста
                 if file_url and file_name:
-                    response = self.send_file_by_url(chat_id, file_url, file_name, rendered_message)
+                    response = self._make_request(
+                        'POST', 'sendFileByUrl',
+                        {
+                            "chatId": chat_id,
+                            "urlFile": file_url,
+                            "fileName": file_name,
+                            "caption": rendered_message,
+                        },
+                        rate_limiter=rate_limiter,
+                        rate_limit_kind="broadcast",
+                    )
                 else:
-                    response = self.send_message(chat_id, rendered_message)
+                    response = self._make_request(
+                        'POST', 'sendMessage',
+                        {"chatId": chat_id, "message": rendered_message},
+                        rate_limiter=rate_limiter,
+                        rate_limit_kind="broadcast",
+                    )
 
                 if response and 'idMessage' in response:
                     status = 'sent'
@@ -325,13 +543,25 @@ class MaxBot:
 
             if progress_cb:
                 progress_cb(i + 1, len(contacts), result)
+            if progress_cb_after_each is not None:
+                progress_cb_after_each(i, result)
 
-            time.sleep(delay)
+            # Если задан rate_limiter — он сам управляет паузами через
+            # acquire() в _make_request. Дополнительный sleep(delay)
+            # нужен только для legacy-вызовов без rate_limiter.
+            if rate_limiter is None:
+                time.sleep(delay)
 
         return results
 
     def broadcast_with_uploaded_file(self, contacts, message, file_path, file_name,
-                                     delay=2.0, use_typing=False, progress_cb=None):
+                                     delay=2.0, use_typing=False, progress_cb=None,
+                                     *,
+                                     rate_limiter: Optional[RateLimiter] = None,
+                                     cancel_event: Optional[threading.Event] = None,
+                                     progress_cb_after_each: Optional[
+                                         Callable[[int, dict], None]
+                                     ] = None):
         """
         Рассылка с локальным файлом: один раз загружает файл в GREEN-API
         (`uploadFile`) и переиспользует полученный `urlFile` через `broadcast`.
@@ -340,6 +570,10 @@ class MaxBot:
         для каждого получателя вызывается `progress_cb` со статусом `error`,
         чтобы UI получил по событию на каждый контакт, как и при обычной
         рассылке.
+
+        Дополнительные kwargs (``rate_limiter``, ``cancel_event``,
+        ``progress_cb_after_each``) пробрасываются в :meth:`broadcast` для
+        анти-бан-защиты — Requirements 2.1, 5.2.
         """
         upload = self._upload_local_file(file_path)
         if not upload or 'urlFile' not in upload:
@@ -356,6 +590,8 @@ class MaxBot:
                 }
                 if progress_cb:
                     progress_cb(i + 1, total, result)
+                if progress_cb_after_each is not None:
+                    progress_cb_after_each(i, result)
             return None
 
         return self.broadcast(
@@ -366,6 +602,9 @@ class MaxBot:
             use_typing=use_typing,
             file_url=upload['urlFile'],
             file_name=file_name,
+            rate_limiter=rate_limiter,
+            cancel_event=cancel_event,
+            progress_cb_after_each=progress_cb_after_each,
         )
 
     # ── УПРАВЛЕНИЕ ГРУППАМИ ───────────────────────────────────────────────────
