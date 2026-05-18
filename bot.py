@@ -320,9 +320,21 @@ class MaxBot:
         return self._make_request('POST', 'getContactInfo', payload)
 
     def get_chat_history(self, chat_id, count=50):
-        """Получить историю сообщений чата."""
+        """Получить историю сообщений чата.
+
+        Returns:
+            * ``list`` — успешный ответ (может быть пустым для нового чата).
+            * ``None`` — запрос провалился (HTTP-ошибка, сетевая ошибка).
+              В отличие от прошлой реализации, ``None`` НЕ заменяется на
+              ``[]``: вызывающий код (``/api/chat-history``) обязан
+              различать «пустая история» и «не удалось получить»,
+              чтобы фронтенд не стирал уже отрисованные сообщения при
+              транзиентном сбое (Requirement: Messenger UX).
+        """
         payload = {"chatId": _normalize_chat_id(chat_id), "count": count}
         result = self._make_request('POST', 'getChatHistory', payload)
+        if result is None:
+            return None
         return result if isinstance(result, list) else []
 
     def read_chat(self, chat_id, id_message=None):

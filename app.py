@@ -2,6 +2,7 @@ import os
 import csv
 import json
 import queue
+import re
 import threading
 import logging
 import time
@@ -1109,7 +1110,34 @@ def api_chat_history():
     count   = int(data.get('count', 50))
     if not chat_id:
         return jsonify({'error': 'chatId required'}), 400
-    history = current_bot().get_chat_history(chat_id, count)
+    bot = current_bot()
+    try:
+        history = bot.get_chat_history(chat_id, count)
+    except QuotaExceededError as exc:
+        info = _humanize_quota_exceeded(str(exc))
+        return jsonify({
+            'error': 'quota_exceeded',
+            'detail': info['message'],
+            'allowed_correspondents': info['allowed_correspondents'],
+            'has_correspondent_limit': info['has_correspondent_limit'],
+            'chat_id': chat_id,
+        }), 466
+    if history is None:
+        # GREEN-API вернул HTTP-ошибку (Validation failed, тариф и т.п.) —
+        # NOT to be confused with empty list. Возвращаем 502, чтобы
+        # фронт сохранил уже отрисованные сообщения и показал тост.
+        logger.warning(
+            "api_chat_history: failed to load history for %r", chat_id
+        )
+        return jsonify({
+            'error': 'history_unavailable',
+            'detail': (
+                'Не удалось получить историю сообщений. Возможно, бот '
+                'не состоит в этом чате или тариф GREEN-API ограничивает '
+                'доступ. Проверьте логи и попробуйте позже.'
+            ),
+            'chat_id': chat_id,
+        }), 502
     return jsonify(history)
 
 
@@ -1141,9 +1169,13 @@ def api_send_message():
         result = bot.send_message(chat_id, message)
     except QuotaExceededError as exc:
         logger.warning("api_send_message: quota exceeded for %s: %s", chat_id, exc)
+        info = _humanize_quota_exceeded(str(exc))
         return jsonify({
             'error': 'quota_exceeded',
-            'detail': str(exc),
+            'detail': info['message'],
+            'allowed_correspondents': info['allowed_correspondents'],
+            'has_correspondent_limit': info['has_correspondent_limit'],
+            'chat_id': chat_id,
         }), 466
     if result and 'idMessage' in result:
         return jsonify({'success': True, 'idMessage': result['idMessage']})
@@ -1287,6 +1319,79 @@ def api_queue_clear():
 # креденшелов): отдельной user-сессии в Flask-бэкенде нет, инстанс
 # GREEN-API однозначно идентифицирует пользователя на стороне
 # anti_ban-аудита.
+
+
+def _humanize_quota_exceeded(raw_text: str) -> dict:
+    """Парсер ответа GREEN-API HTTP 466.
+
+    Кейс — Developer Mode тарифа: тело ответа содержит JSON со списком
+    разрешённых номеров и предложением сменить тариф. Вытаскиваем
+    структуру для UI, чтобы показать читаемое сообщение вместо
+    технического ``quota_466``.
+
+    Returns:
+        dict со следующими ключами:
+
+        * ``allowed_correspondents`` — ``list[str]``, разрешённые
+          номера-собеседники (может быть пустым).
+        * ``has_correspondent_limit`` — ``bool`` флаг Developer-mode.
+        * ``message`` — человекочитаемая строка для UI/тоста.
+    """
+    info = {
+        "allowed_correspondents": [],
+        "has_correspondent_limit": False,
+        "message": (
+            "Тариф GREEN-API не позволяет отправку этому получателю. "
+            "Смените тариф на Business в console.green-api.com."
+        ),
+    }
+    if not raw_text:
+        return info
+
+    # Сообщение от bot.py имеет формат
+    # "GREEN-API quota exceeded on <endpoint>: <raw json>".
+    # Вырезаем JSON-часть.
+    try:
+        match = re.search(r"\{.*\}", raw_text, re.DOTALL)
+        if not match:
+            return info
+        body = json.loads(match.group(0))
+    except (json.JSONDecodeError, ValueError):
+        return info
+
+    correspondents = body.get("correspondentsStatus") or {}
+    if correspondents.get("status") == "CORRESPONDENTS_QUOTE_EXCEEDED":
+        info["has_correspondent_limit"] = True
+        # description: "...from these numbers: A, B, C. ..."
+        desc = correspondents.get("description") or ""
+        nums_match = re.search(
+            r"from these numbers:\s*([0-9,\s]+?)(?:\.|$)", desc
+        )
+        if nums_match:
+            info["allowed_correspondents"] = [
+                n.strip()
+                for n in nums_match.group(1).split(",")
+                if n.strip().isdigit()
+            ]
+
+    invoke = body.get("invokeStatus") or {}
+    invoke_status = invoke.get("status")
+
+    if info["has_correspondent_limit"] and info["allowed_correspondents"]:
+        info["message"] = (
+            "Тариф GREEN-API в режиме Developer: можно писать только "
+            "разрешённым номерам — "
+            + ", ".join(info["allowed_correspondents"])
+            + ". Смените тариф на Business в console.green-api.com, "
+            "чтобы отправлять в группы и любые другие чаты."
+        )
+    elif invoke_status in ("QUOTE_EXCEEDED", "QUOTE_ALLOWED"):
+        info["message"] = (
+            "Месячная квота GREEN-API исчерпана. Смените тариф в "
+            "console.green-api.com или подождите следующий расчётный период."
+        )
+
+    return info
 
 
 def _resolve_user_id() -> str:

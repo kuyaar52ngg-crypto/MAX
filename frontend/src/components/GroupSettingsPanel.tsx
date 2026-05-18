@@ -33,9 +33,11 @@ interface GroupSettingsPanelProps {
 }
 
 function normalizeGroupId(chatId: string): string {
-  if (!chatId) return chatId;
-  if (chatId.endsWith("@g.us") || chatId.endsWith("@c.us")) return chatId;
-  if (chatId.includes("-")) return `${chatId}@g.us`;
+  // MAX-транспорт GREEN-API ожидает chatId группы ровно в том виде,
+  // в каком его выдал getChats (часто это число с лидирующим минусом,
+  // например ``-74158757142706``). Любые попытки автоматически
+  // дописать ``@g.us`` ломали запросы на этом инстансе. Поэтому
+  // оставляем значение нетронутым и доверяем backend-у/API-валидации.
   return chatId;
 }
 
