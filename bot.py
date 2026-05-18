@@ -59,33 +59,21 @@ def render_message_template(template, contact):
 
 
 def _normalize_chat_id(chat_id):
-    """Нормализовать GREEN-API ``chatId`` к виду ``<digits>@c.us`` /
-    ``<digits>-<digits>@g.us``.
+    """Pass-through helper kept for explicit-intent call sites.
 
-    GREEN-API строго требует суффикс домена в каждом запросе. Если
-    fronted прислал «голый» номер (например, при ручном вводе в диалоге
-    «Создать группу» или после миграции старых записей), запросы вроде
-    ``sendMessage`` отвергаются. Эта утилита делает преобразование
-    идемпотентным:
+    GREEN-API supports several transports (WhatsApp / MAX / etc.) and
+    each has its own chatId conventions. Adding domain suffixes
+    automatically (``@c.us``/``@g.us``) breaks MAX, where group IDs
+    arrive as bare signed integers (e.g. ``-74158757142706``) and must
+    NOT be modified — see Railway logs from 2026-05-18 where every
+    suffix-augmented call returned 400 ``Validation failed``.
 
-    * ``"79990000000@c.us"`` → возвращается как есть;
-    * ``"120363123-456789@g.us"`` → возвращается как есть;
-    * ``"120363123-456789"`` → ``"120363123-456789@g.us"`` (наличие
-      ``-`` — характерный признак группового ID в WhatsApp);
-    * ``"79990000000"`` → ``"79990000000@c.us"``;
-    * ``""`` / ``None`` → возвращается как есть, чтобы вызывающий код
-      сам обработал ошибку валидации (поведение совместимое с прежним).
+    The function therefore returns the value as-is. It exists only so
+    call sites read consistently and we have a single place to revisit
+    if a future transport actually requires per-call rewriting (which
+    would then have to be transport-aware, not heuristic).
     """
-    if not chat_id:
-        return chat_id
-    text = str(chat_id).strip()
-    if not text:
-        return text
-    if '@' in text:
-        return text
-    if '-' in text:
-        return f"{text}@g.us"
-    return f"{text}@c.us"
+    return chat_id
 
 
 class MaxBot:
@@ -181,13 +169,14 @@ class MaxBot:
                         f"HTTP Ошибка [{endpoint}]: {e.response.text}"
                     )
                     return None
-                logger.error(f"HTTP Ошибка [{endpoint}]: {e.response.text}")
+                logger.error(
+                    f"HTTP Ошибка [{endpoint}]: {e.response.text} | "
+                    f"payload={payload!r}"
+                )
                 return None
             except requests.exceptions.RequestException as e:
                 logger.error(f"Сетевая ошибка [{endpoint}]: {e}")
                 return None
-
-            # Успешный ответ — регистрируем слот в sliding window.
             if rate_limiter is not None:
                 rate_limiter.record_request()
             return response.json()
@@ -306,7 +295,19 @@ class MaxBot:
     def get_chats(self):
         """Получить список всех чатов."""
         result = self._make_request('GET', 'getChats')
-        return result if isinstance(result, list) else []
+        chats = result if isinstance(result, list) else []
+        # Diagnostic: log how chatIds are shaped on this instance.
+        # Different GREEN-API transports return different formats
+        # (WhatsApp vs MAX), and we need real samples to support each
+        # correctly. Sampled at INFO level so it surfaces in Railway
+        # logs without enabling debug-level globally.
+        if chats:
+            sample_ids = [
+                str(c.get('chatId') or c.get('id') or '')[:80]
+                for c in chats[:5]
+            ]
+            logger.info("get_chats: %d chats, sample chatIds=%r", len(chats), sample_ids)
+        return chats
 
     def get_contacts(self):
         """Получить список всех контактов."""
@@ -649,10 +650,14 @@ class MaxBot:
         return None
 
     def get_group_data(self, group_id):
-        """Получить данные группы и список участников."""
-        # Исправление ID: группы в WhatsApp должны заканчиваться на @g.us
-        full_id = group_id if '@' in group_id else f"{group_id}@g.us"
-        payload = {"chatId": full_id}
+        """Получить данные группы и список участников.
+
+        ``group_id`` отдаётся в GREEN-API без модификаций — формат
+        зависит от транспорта (WhatsApp возвращает ``<id>@g.us``,
+        MAX — голый числовой ID), и принудительный суффикс ломает
+        второй случай.
+        """
+        payload = {"chatId": group_id}
         return self._make_request('POST', 'getGroupData', payload)
 
     def add_group_participant(self, group_id, participant_chat_id):
