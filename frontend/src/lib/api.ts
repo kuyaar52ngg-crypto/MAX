@@ -112,12 +112,43 @@ export function clearAllCredentials() {
 
 // ── Flask (GREEN-API) ──────────────────────────────────────────────────────
 
+interface FlaskErrorBody {
+  error?: string;
+  detail?: string;
+  // Optional context Flask attaches for richer UX (e.g. /api/send-message
+  // includes `instance_state` so users see why the call failed).
+  instance_state?: string | null;
+  [key: string]: unknown;
+}
+
+/**
+ * Extract the most user-friendly message from a Flask error response.
+ * Order of preference: `detail` (long human-readable string) >
+ * `error` (machine code or short hint) > HTTP `statusText`.
+ *
+ * If the Flask response also carries `instance_state` and it's not
+ * `authorized`/`unknown`, append it so the user immediately sees the
+ * likely root cause (e.g. `notAuthorized`, `yellowCard`).
+ */
+function flaskErrorMessage(body: FlaskErrorBody, statusText: string): string {
+  const base = body.detail?.trim() || body.error?.trim() || statusText;
+  const stateHint =
+    body.instance_state &&
+    body.instance_state !== "authorized" &&
+    body.instance_state !== "unknown"
+      ? ` (состояние инстанса: ${body.instance_state})`
+      : "";
+  return base + stateHint;
+}
+
 export async function apiGet<T>(path: string): Promise<T> {
   const headers = await getFlaskHeaders();
   const res = await fetch(`${API_BASE}${path}`, { headers });
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(err.error || res.statusText);
+    const err = (await res
+      .json()
+      .catch(() => ({ error: res.statusText }))) as FlaskErrorBody;
+    throw new Error(flaskErrorMessage(err, res.statusText));
   }
   return res.json();
 }
@@ -130,8 +161,10 @@ export async function apiPost<T>(path: string, body?: unknown): Promise<T> {
     body: body ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(err.error || res.statusText);
+    const err = (await res
+      .json()
+      .catch(() => ({ error: res.statusText }))) as FlaskErrorBody;
+    throw new Error(flaskErrorMessage(err, res.statusText));
   }
   return res.json();
 }
@@ -143,8 +176,10 @@ export async function apiDelete<T>(path: string): Promise<T> {
     headers,
   });
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(err.error || res.statusText);
+    const err = (await res
+      .json()
+      .catch(() => ({ error: res.statusText }))) as FlaskErrorBody;
+    throw new Error(flaskErrorMessage(err, res.statusText));
   }
   return res.json();
 }
@@ -157,8 +192,10 @@ export async function apiUpload<T>(path: string, formData: FormData): Promise<T>
     body: formData,
   });
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(err.error || res.statusText);
+    const err = (await res
+      .json()
+      .catch(() => ({ error: res.statusText }))) as FlaskErrorBody;
+    throw new Error(flaskErrorMessage(err, res.statusText));
   }
   return res.json();
 }

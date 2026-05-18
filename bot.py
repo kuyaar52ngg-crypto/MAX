@@ -58,6 +58,36 @@ def render_message_template(template, contact):
     return re.sub(r'\{([^{}]+)\}', replace_block, template or '')
 
 
+def _normalize_chat_id(chat_id):
+    """Нормализовать GREEN-API ``chatId`` к виду ``<digits>@c.us`` /
+    ``<digits>-<digits>@g.us``.
+
+    GREEN-API строго требует суффикс домена в каждом запросе. Если
+    fronted прислал «голый» номер (например, при ручном вводе в диалоге
+    «Создать группу» или после миграции старых записей), запросы вроде
+    ``sendMessage`` отвергаются. Эта утилита делает преобразование
+    идемпотентным:
+
+    * ``"79990000000@c.us"`` → возвращается как есть;
+    * ``"120363123-456789@g.us"`` → возвращается как есть;
+    * ``"120363123-456789"`` → ``"120363123-456789@g.us"`` (наличие
+      ``-`` — характерный признак группового ID в WhatsApp);
+    * ``"79990000000"`` → ``"79990000000@c.us"``;
+    * ``""`` / ``None`` → возвращается как есть, чтобы вызывающий код
+      сам обработал ошибку валидации (поведение совместимое с прежним).
+    """
+    if not chat_id:
+        return chat_id
+    text = str(chat_id).strip()
+    if not text:
+        return text
+    if '@' in text:
+        return text
+    if '-' in text:
+        return f"{text}@g.us"
+    return f"{text}@c.us"
+
+
 class MaxBot:
     """
     Основной класс для работы с мессенджером MAX через GREEN-API.
@@ -285,18 +315,18 @@ class MaxBot:
 
     def get_contact_info(self, chat_id):
         """Получить информацию о контакте по chatId."""
-        payload = {"chatId": chat_id}
+        payload = {"chatId": _normalize_chat_id(chat_id)}
         return self._make_request('POST', 'getContactInfo', payload)
 
     def get_chat_history(self, chat_id, count=50):
         """Получить историю сообщений чата."""
-        payload = {"chatId": chat_id, "count": count}
+        payload = {"chatId": _normalize_chat_id(chat_id), "count": count}
         result = self._make_request('POST', 'getChatHistory', payload)
         return result if isinstance(result, list) else []
 
     def read_chat(self, chat_id, id_message=None):
         """Отметить чат как прочитанный."""
-        payload = {"chatId": chat_id}
+        payload = {"chatId": _normalize_chat_id(chat_id)}
         if id_message:
             payload["idMessage"] = id_message
         return self._make_request('POST', 'readChat', payload)
@@ -305,18 +335,18 @@ class MaxBot:
 
     def send_typing(self, chat_id):
         """Имитация набора текста (показывает «печатает…» собеседнику)."""
-        payload = {"chatId": chat_id}
+        payload = {"chatId": _normalize_chat_id(chat_id)}
         return self._make_request('POST', 'sendTyping', payload)
 
     def send_message(self, chat_id, message):
         """Отправка текстового сообщения."""
-        payload = {"chatId": chat_id, "message": message}
+        payload = {"chatId": _normalize_chat_id(chat_id), "message": message}
         return self._make_request('POST', 'sendMessage', payload)
 
     def send_file_by_url(self, chat_id, file_url, file_name, caption=""):
         """Отправка файла по URL."""
         payload = {
-            "chatId": chat_id,
+            "chatId": _normalize_chat_id(chat_id),
             "urlFile": file_url,
             "fileName": file_name,
             "caption": caption
@@ -353,7 +383,7 @@ class MaxBot:
     def send_location(self, chat_id, lat, lon, name="", address=""):
         """Отправка геолокации."""
         payload = {
-            "chatId": chat_id,
+            "chatId": _normalize_chat_id(chat_id),
             "nameLocation": name,
             "address": address,
             "latitude": lat,
@@ -364,7 +394,7 @@ class MaxBot:
     def send_contact(self, chat_id, contact_phone, contact_name):
         """Отправка контакта (vCard)."""
         payload = {
-            "chatId": chat_id,
+            "chatId": _normalize_chat_id(chat_id),
             "contact": {
                 "phoneContact": int(contact_phone),
                 "firstName": contact_name
@@ -374,14 +404,14 @@ class MaxBot:
 
     def delete_message(self, chat_id, id_message):
         """Удаление сообщения."""
-        payload = {"chatId": chat_id, "idMessage": id_message}
+        payload = {"chatId": _normalize_chat_id(chat_id), "idMessage": id_message}
         return self._make_request('POST', 'deleteMessage', payload)
 
     def forward_messages(self, chat_id, from_chat_id, messages):
         """Пересылка сообщений."""
         payload = {
-            "chatId": chat_id,
-            "chatIdFrom": from_chat_id,
+            "chatId": _normalize_chat_id(chat_id),
+            "chatIdFrom": _normalize_chat_id(from_chat_id),
             "messages": messages
         }
         return self._make_request('POST', 'forwardMessages', payload)

@@ -1131,10 +1131,45 @@ def api_send_message():
     message = data.get('message', '').strip()
     if not chat_id or not message:
         return jsonify({'error': 'chatId and message required'}), 400
-    result = current_bot().send_message(chat_id, message)
+
+    bot = current_bot()
+    logger.info(
+        "api_send_message: chat_id=%r len(message)=%d",
+        chat_id, len(message),
+    )
+    try:
+        result = bot.send_message(chat_id, message)
+    except QuotaExceededError as exc:
+        logger.warning("api_send_message: quota exceeded for %s: %s", chat_id, exc)
+        return jsonify({
+            'error': 'quota_exceeded',
+            'detail': str(exc),
+        }), 466
     if result and 'idMessage' in result:
         return jsonify({'success': True, 'idMessage': result['idMessage']})
-    return jsonify({'error': 'Не удалось отправить сообщение'}), 500
+
+    # Запрос дошёл, но GREEN-API не вернул idMessage. Самые частые
+    # причины: невалидный chatId (бот не состоит в группе / вышел из неё),
+    # инстанс не авторизован, временный сбой. Помогаем пользователю
+    # понять что произошло, проверив текущее состояние инстанса.
+    logger.warning(
+        "api_send_message: GREEN-API returned no idMessage (chat_id=%r, result=%r)",
+        chat_id, result,
+    )
+    state = None
+    try:
+        state = bot.get_state()
+    except Exception:
+        pass
+    return jsonify({
+        'error': 'send_failed',
+        'detail': (
+            'Сообщение не доставлено. Проверьте, что бот всё ещё состоит '
+            'в этой группе и инстанс GREEN-API авторизован.'
+        ),
+        'instance_state': state,
+        'chat_id': chat_id,
+    }), 500
 
 
 # ── Отправка файла ────────────────────────────────────────────────────────
