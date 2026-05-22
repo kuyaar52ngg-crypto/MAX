@@ -259,3 +259,31 @@ export async function nxDelete<T>(path: string): Promise<T> {
   }
   return res.json();
 }
+
+export async function nxPatch<T>(path: string, body?: unknown): Promise<T> {
+  const headers = await getAuthHeaders();
+  const res = await fetch(path, {
+    method: "PATCH",
+    headers,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || res.statusText);
+  }
+  return res.json();
+}
+
+export async function nxPut<T>(path: string, body?: unknown): Promise<T> {
+  const headers = await getAuthHeaders();
+  const res = await fetch(path, {
+    method: "PUT",
+    headers,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || res.statusText);
+  }
+  return res.json();
+}
