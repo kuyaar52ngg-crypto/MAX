@@ -27,7 +27,7 @@
  * Validates: Requirements 1.3, 1.6, 4.1, 4.2, 4.3, 4.4, 9.2, 9.3
  */
 
-import { Check, CircleHelp, Send, X } from "lucide-react";
+import { CalendarClock, Check, CircleHelp, Send, X } from "lucide-react";
 
 import type { Template } from "@/lib/types";
 
@@ -88,6 +88,8 @@ export interface MessageBlockProps {
   progressPct: number;
   /** Click handler for the "Начать рассылку" button. */
   onStart(): void;
+  /** Optional handler for "Запланировать…" button. */
+  onSchedule?(): void;
 
   /** Latest SSE progress event. When `null`, the progress block is hidden. */
   progress: ProgressEvent | null;
@@ -125,6 +127,7 @@ export function MessageBlock({
   broadcasting,
   progressPct,
   onStart,
+  onSchedule,
   progress,
   results,
 }: MessageBlockProps) {
@@ -262,20 +265,36 @@ export function MessageBlock({
         </section>
       )}
 
-      {/* Start button — must remain in the central column on both layouts. */}
-      <button
-        type="button"
-        onClick={onStart}
-        disabled={startDisabled}
-        className="w-full py-3.5 bg-accent hover:bg-accent-hover text-bg font-semibold rounded-lg transition-all duration-200 hover:shadow-glow-lg disabled:opacity-40 disabled:cursor-not-allowed active:scale-[0.98]"
-      >
-        <span className="inline-flex items-center justify-center gap-2">
-          <Send className="h-4 w-4" strokeWidth={2.2} aria-hidden="true" />
-          {broadcasting
-            ? `Рассылка... ${progressPct}%`
-            : "Начать рассылку"}
-        </span>
-      </button>
+      {/* Start + Schedule — must remain in the central column on both layouts. */}
+      <div className="flex flex-col gap-2 sm:flex-row">
+        <button
+          type="button"
+          onClick={onStart}
+          disabled={startDisabled}
+          className="flex-1 py-3.5 bg-accent hover:bg-accent-hover text-bg font-semibold rounded-lg transition-all duration-200 hover:shadow-glow-lg disabled:opacity-40 disabled:cursor-not-allowed active:scale-[0.98]"
+        >
+          <span className="inline-flex items-center justify-center gap-2">
+            <Send className="h-4 w-4" strokeWidth={2.2} aria-hidden="true" />
+            {broadcasting
+              ? `Рассылка... ${progressPct}%`
+              : "Начать рассылку"}
+          </span>
+        </button>
+        {onSchedule && (
+          <button
+            type="button"
+            onClick={onSchedule}
+            disabled={localBlocked || broadcasting || !canStart}
+            className="py-3.5 px-5 border border-accent text-accent hover:bg-accent/10 font-semibold rounded-lg transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed active:scale-[0.98]"
+            title="Запланировать отложенную отправку"
+          >
+            <span className="inline-flex items-center justify-center gap-2">
+              <CalendarClock className="h-4 w-4" strokeWidth={2.2} aria-hidden="true" />
+              Запланировать
+            </span>
+          </button>
+        )}
+      </div>
     </div>
   );
 }

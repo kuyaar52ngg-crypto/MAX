@@ -51,6 +51,7 @@ import {
   type ProgressEvent,
   type ResultRow,
 } from "@/components/broadcast";
+import { EnhancedScheduleModal } from "@/components/scheduling";
 import { PreFlightModal } from "@/components/anti-ban/PreFlightModal";
 import { StopButton } from "@/components/anti-ban/StopButton";
 import { useBulkOperation } from "@/lib/hooks/useBulkOperation";
@@ -130,6 +131,7 @@ export default function BroadcastPage() {
     DEFAULT_ANTI_BAN_CONFIG,
   );
   const [preflightOpen, setPreflightOpen] = useState<boolean>(false);
+  const [scheduleOpen, setScheduleOpen] = useState<boolean>(false);
   const [pendingBroadcast, setPendingBroadcast] =
     useState<PendingBroadcast | null>(null);
   const bulkOp = useBulkOperation("broadcast");
@@ -644,6 +646,7 @@ export default function BroadcastPage() {
             broadcasting={bulkOp.active}
             progressPct={progressPct}
             onStart={startBroadcast}
+            onSchedule={() => setScheduleOpen(true)}
             progress={progress}
             results={results}
           />
@@ -668,6 +671,21 @@ export default function BroadcastPage() {
           />
         </div>
       </div>
+
+      <EnhancedScheduleModal
+        open={scheduleOpen}
+        onClose={() => setScheduleOpen(false)}
+        onScheduled={() => {
+          setScheduleOpen(false);
+        }}
+        message={message}
+        contacts={contacts}
+        personalizedMessages={personalizedMessages}
+        delaySeconds={delay}
+        useTyping={useTyping}
+        fileName={attachment.kind === "selected" ? attachment.file.name : null}
+        fileUrl={null}
+      />
 
       <PreFlightModal
         open={preflightOpen}

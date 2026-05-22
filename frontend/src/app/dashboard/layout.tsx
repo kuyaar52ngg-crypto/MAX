@@ -6,6 +6,7 @@ import Link from "next/link";
 import {
   BarChart3,
   Bot,
+  CalendarClock,
   ChevronDown,
   ClipboardList,
   FileText,
@@ -21,11 +22,13 @@ import {
 import { createClient } from "@/lib/supabase/client";
 import { invalidateAuthCache, clearAllCredentials } from "@/lib/api";
 import { HeaderStateBadge } from "@/components/anti-ban/HeaderStateBadge";
+import { NotificationCenter } from "@/components/scheduling";
 
 const NAV_ITEMS: { href: string; label: string; icon: LucideIcon }[] = [
   { href: "/dashboard", label: "Обзор", icon: BarChart3 },
   { href: "/dashboard/messenger", label: "Мессенджер", icon: MessageCircle },
   { href: "/dashboard/broadcast", label: "Рассылка", icon: Megaphone },
+  { href: "/dashboard/scheduled", label: "Расписание", icon: CalendarClock },
   { href: "/dashboard/contacts", label: "Проверка", icon: UserCheck },
   { href: "/dashboard/history", label: "История", icon: ClipboardList },
   { href: "/dashboard/templates", label: "Шаблоны", icon: FileText },
@@ -182,6 +185,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
           <div className="relative flex items-center gap-2 justify-self-end">
             <HeaderStateBadge />
+            <NotificationCenter />
             <button
               type="button"
               onClick={() => setAccountOpen((value) => !value)}

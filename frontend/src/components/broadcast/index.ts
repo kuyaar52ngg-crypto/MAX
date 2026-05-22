@@ -46,3 +46,6 @@ export type { SettingsBlockProps } from "./SettingsBlock";
 
 export { MessageBlock } from "./MessageBlock";
 export type { MessageBlockProps } from "./MessageBlock";
+
+export { ScheduleModal } from "./ScheduleModal";
+export type { ScheduleModalProps } from "./ScheduleModal";

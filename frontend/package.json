@@ -10,6 +10,9 @@
     "postinstall": "prisma generate"
   },
   "dependencies": {
+    "@dnd-kit/core": "^6.1.0",
+    "@dnd-kit/sortable": "^8.0.0",
+    "@dnd-kit/utilities": "^3.2.2",
     "@prisma/adapter-pg": "^7.4.2",
     "@prisma/client": "^7.4.2",
     "@supabase/ssr": "latest",
@@ -17,6 +20,7 @@
     "dotenv": "^17.4.2",
     "lucide-react": "^1.14.0",
     "next": "latest",
+    "nodemailer": "^6.9.16",
     "pg": "^8.20.0",
     "prisma": "^7.4.2",
     "react": "latest",
@@ -26,11 +30,13 @@
     "@eslint/eslintrc": "latest",
     "@tailwindcss/postcss": "latest",
     "@types/node": "latest",
+    "@types/nodemailer": "^6.4.17",
     "@types/pg": "^8.18.0",
     "@types/react": "latest",
     "@types/react-dom": "latest",
     "eslint": "latest",
     "eslint-config-next": "latest",
+    "fast-check": "^3.23.1",
     "postcss": "latest",
     "tailwindcss": "latest",
     "typescript": "latest"

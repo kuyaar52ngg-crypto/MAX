@@ -2,87 +2,36 @@
 
 import { useState, useEffect } from "react";
 import {
-  CheckCircle2,
   KeyRound,
   Link2,
-  QrCode,
   RefreshCw,
   Settings as SettingsIcon,
   Shield,
-  Wifi,
 } from "lucide-react";
-import { apiGet, apiPost, nxGet, nxPost, invalidateCredentialsCache } from "@/lib/api";
+import Link from "next/link";
+import { apiGet, apiPost } from "@/lib/api";
 import { AntiBanSettingsForm } from "@/components/anti-ban/AntiBanSettingsForm";
 import { AntiBanConfig, DEFAULT_ANTI_BAN_CONFIG } from "@/lib/anti-ban";
+import { CredentialsWizard } from "@/components/settings/CredentialsWizard";
+import { SuiteSettingsForm } from "@/components/scheduling";
 import { usePersistedState } from "@/lib/hooks/usePersistedState";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000";
 
-interface AccountSettings {
-  phone?: string;
-  avatar?: string;
-  wid?: string;
-  stateInstance?: string;
-}
-
-interface GreenCredentials {
-  green_api_id: string;
-  green_api_token: string;
-  green_api_url: string;
-  has_credentials: boolean;
-}
-
 export default function SettingsPage() {
-  const [settings, setSettings] = useState<AccountSettings | null>(null);
-  const [credentials, setCredentials] = useState<GreenCredentials>({
-    green_api_id: "",
-    green_api_token: "",
-    green_api_url: "https://api.green-api.com",
-    has_credentials: false,
-  });
-  const [qrData, setQrData] = useState<string | null>(null);
-  const [qrType, setQrType] = useState<string>("");
   const [webhookUrl, setWebhookUrl] = usePersistedState<string>(
     "settings:webhookUrl",
     "",
   );
   const [saving, setSaving] = useState(false);
-  const [savingCredentials, setSavingCredentials] = useState(false);
-  const [credentialsSaved, setCredentialsSaved] = useState(false);
-  const [credentialsError, setCredentialsError] = useState<string | null>(null);
+  const [rebooting, setRebooting] = useState(false);
   const [instanceError, setInstanceError] = useState<string | null>(null);
   const [antiBanConfig, setAntiBanConfig] = useState<AntiBanConfig | null>(null);
   const [antiBanError, setAntiBanError] = useState<string | null>(null);
 
-  useEffect(() => { loadCredentials(); loadSettings(); loadAntiBanConfig(); }, []);
-
-  async function loadCredentials() {
-    try {
-      const data = await nxGet<GreenCredentials>("/api/profile/credentials");
-      setCredentials(data);
-    } catch { /* */ }
-  }
-
-  async function saveCredentials() {
-    setSavingCredentials(true);
-    setCredentialsSaved(false);
-    setCredentialsError(null);
-    try {
-      const data = await nxPost<GreenCredentials>("/api/profile/credentials", credentials);
-      setCredentials(data);
-      invalidateCredentialsCache();
-      setCredentialsSaved(true);
-      await loadSettings();
-    } catch (err: unknown) {
-      setCredentialsError(err instanceof Error ? err.message : "Не удалось сохранить данные");
-    } finally {
-      setSavingCredentials(false);
-    }
-  }
-
-  async function loadSettings() {
-    try { setSettings(await apiGet<AccountSettings>("/api/account-settings")); } catch { /* */ }
-  }
+  useEffect(() => {
+    loadAntiBanConfig();
+  }, []);
 
   async function loadAntiBanConfig() {
     setAntiBanError(null);
@@ -92,29 +41,25 @@ export default function SettingsPage() {
     } catch (err: unknown) {
       // Fall back to defaults if the endpoint is unreachable so the form is still usable.
       setAntiBanConfig(DEFAULT_ANTI_BAN_CONFIG);
-      setAntiBanError(err instanceof Error ? err.message : "Не удалось загрузить конфиг анти-бан защиты");
-    }
-  }
-
-  async function getQR() {
-    setInstanceError(null);
-    try {
-      const data = await apiGet<{ type: string; data?: string }>("/api/qr");
-      setQrType(data.type);
-      if (data.type === "qrCode" && data.data) setQrData(data.data);
-      else setQrData(null);
-    } catch (err: unknown) {
-      setInstanceError(err instanceof Error ? err.message : "Не удалось получить QR-код");
+      setAntiBanError(
+        err instanceof Error
+          ? err.message
+          : "Не удалось загрузить конфиг анти-бан защиты",
+      );
     }
   }
 
   async function reboot() {
     setInstanceError(null);
+    setRebooting(true);
     try {
       await apiPost("/api/reboot", {});
-      await loadSettings();
     } catch (err: unknown) {
-      setInstanceError(err instanceof Error ? err.message : "Не удалось перезапустить инстанс");
+      setInstanceError(
+        err instanceof Error ? err.message : "Не удалось перезапустить инстанс",
+      );
+    } finally {
+      setRebooting(false);
     }
   }
 
@@ -122,119 +67,88 @@ export default function SettingsPage() {
     if (!webhookUrl.trim()) return;
     setSaving(true);
     setInstanceError(null);
-    try { await apiPost("/api/setup-webhook", { url: webhookUrl.trim() }); } catch (err: unknown) { setInstanceError(err instanceof Error ? err.message : "Не удалось установить webhook"); } finally { setSaving(false); }
+    try {
+      await apiPost("/api/setup-webhook", { url: webhookUrl.trim() });
+    } catch (err: unknown) {
+      setInstanceError(
+        err instanceof Error ? err.message : "Не удалось установить webhook",
+      );
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
     <div className="p-6 lg:p-8 max-w-4xl mx-auto space-y-6">
       <div>
         <h1 className="text-2xl font-bold text-text flex items-center gap-2">
-          <SettingsIcon className="h-6 w-6 text-text-muted" strokeWidth={2} aria-hidden="true" />
+          <SettingsIcon
+            className="h-6 w-6 text-text-muted"
+            strokeWidth={2}
+            aria-hidden="true"
+          />
           Настройки
         </h1>
-        <p className="text-text-muted text-sm mt-1">Управление инстансом и профилем</p>
+        <p className="text-text-muted text-sm mt-1">
+          Подключение GREEN-API, анти-бан защита и сервисные действия
+        </p>
       </div>
 
-      {/* GREEN-API credentials */}
-      <div className="settings-section glass rounded-2xl p-6 space-y-4">
-        <div className="flex items-center justify-between gap-4">
-          <div>
-            <h3 className="text-sm font-semibold text-text-secondary flex items-center gap-2">
-              <KeyRound className="h-4 w-4" strokeWidth={2} aria-hidden="true" />
-              GREEN-API данные
-            </h3>
-            <p className="text-xs text-text-muted mt-1">Эти данные хранятся в Supabase отдельно для каждого пользователя</p>
-          </div>
-          {credentials.has_credentials && (
-            <span className="px-3 py-1 rounded-full bg-success-bg text-success text-xs">Настроено</span>
-          )}
-        </div>
+      {/* Wizard подключения GREEN-API (credentials → QR → success) */}
+      <CredentialsWizard />
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          <div>
-            <label className="block text-xs text-text-muted mb-1">ID Instance</label>
-            <input
-              type="text"
-              value={credentials.green_api_id}
-              onChange={(e) => setCredentials((c) => ({ ...c, green_api_id: e.target.value }))}
-              placeholder="1101000001"
-              className="w-full px-4 py-2.5 bg-bg/50 border border-border rounded-xl text-sm text-text placeholder:text-text-muted focus:outline-none focus:border-accent/50 transition-colors"
-            />
-          </div>
-          <div>
-            <label className="block text-xs text-text-muted mb-1">API Token Instance</label>
-            <input
-              type="password"
-              value={credentials.green_api_token}
-              onChange={(e) => setCredentials((c) => ({ ...c, green_api_token: e.target.value }))}
-              placeholder="your_api_token"
-              className="w-full px-4 py-2.5 bg-bg/50 border border-border rounded-xl text-sm text-text placeholder:text-text-muted focus:outline-none focus:border-accent/50 transition-colors"
-            />
+      {/* Управление несколькими инстансами через chuжие credentials */}
+      <Link
+        href="/dashboard/settings/instances"
+        className="settings-section glass rounded-2xl p-6 flex items-center justify-between gap-4 hover:border-accent/40 transition-colors"
+      >
+        <div className="flex items-center gap-3 min-w-0">
+          <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent/10 text-accent">
+            <KeyRound className="h-5 w-5" strokeWidth={2} />
+          </span>
+          <div className="min-w-0">
+            <div className="text-sm font-semibold text-text">
+              GREEN API инстансы (до 5 шт.)
+            </div>
+            <div className="text-xs text-text-muted mt-0.5">
+              Подключайте свои или чужие инстансы — нужны только{" "}
+              <span className="font-mono">idInstance</span> и{" "}
+              <span className="font-mono">apiTokenInstance</span>. Привязка
+              MAX через QR.
+            </div>
           </div>
         </div>
+        <span className="text-text-muted">→</span>
+      </Link>
 
-        <div>
-          <label className="block text-xs text-text-muted mb-1">GREEN API URL</label>
-          <input
-            type="url"
-            value={credentials.green_api_url}
-            onChange={(e) => setCredentials((c) => ({ ...c, green_api_url: e.target.value }))}
-            placeholder="https://api.green-api.com"
-            className="w-full px-4 py-2.5 bg-bg/50 border border-border rounded-xl text-sm text-text placeholder:text-text-muted focus:outline-none focus:border-accent/50 transition-colors"
-          />
+      {instanceError && (
+        <div className="px-4 py-3 bg-error-bg border border-error/20 rounded-xl text-error text-sm">
+          {instanceError}
         </div>
+      )}
 
-        <div className="flex items-center gap-3">
-          <button
-            onClick={saveCredentials}
-            disabled={savingCredentials || !credentials.green_api_id.trim() || !credentials.green_api_token.trim()}
-            className="px-5 py-2.5 bg-accent hover:bg-accent-hover text-white text-sm font-medium rounded-xl transition-all disabled:opacity-50 active:scale-95"
-          >
-            {savingCredentials ? "Сохранение..." : "Сохранить"}
-          </button>
-          {credentialsSaved && <span className="text-success text-sm">Сохранено</span>}
-          {credentialsError && <span className="text-error text-sm">{credentialsError}</span>}
-        </div>
-      </div>
-
-      {/* Instance status */}
+      {/* Сервисные действия */}
       <div className="settings-section glass rounded-2xl p-6 space-y-4">
         <h3 className="text-sm font-semibold text-text-secondary flex items-center gap-2">
-          <Wifi className="h-4 w-4" strokeWidth={2} aria-hidden="true" />
-          Инстанс
+          <RefreshCw className="h-4 w-4" strokeWidth={2} aria-hidden="true" />
+          Сервис
         </h3>
-        {settings && (
-          <div className="grid grid-cols-2 gap-4 text-sm">
-            <div><span className="text-text-muted text-xs">Телефон</span><div className="text-text font-medium">{settings.phone || "—"}</div></div>
-            <div><span className="text-text-muted text-xs">WID</span><div className="text-text font-mono text-xs">{settings.wid || "—"}</div></div>
-          </div>
-        )}
-        <div className="flex gap-3">
-          <button onClick={getQR} className="px-4 py-2 bg-surface border border-border rounded-xl text-sm text-text hover:border-accent/40 transition-colors flex items-center gap-2">
-            <QrCode className="h-4 w-4" strokeWidth={2} aria-hidden="true" />
-            QR-код
-          </button>
-          <button onClick={reboot} className="px-4 py-2 bg-surface border border-border rounded-xl text-sm text-text hover:border-warning/40 transition-colors flex items-center gap-2">
-            <RefreshCw className="h-4 w-4" strokeWidth={2} aria-hidden="true" />
-            Перезапуск
-          </button>
-        </div>
-        {instanceError && (
-          <div className="px-4 py-3 bg-error-bg border border-error/20 rounded-xl text-error text-sm">
-            {instanceError}
-          </div>
-        )}
-        {qrData && (
-          <div className="flex justify-center p-4 bg-white rounded-xl">
-            <img src={`data:image/png;base64,${qrData}`} alt="QR Code" className="w-48 h-48" />
-          </div>
-        )}
-        {qrType === "alreadyLogged" && (
-          <div className="px-4 py-3 bg-success-bg border border-success/20 rounded-xl text-success text-sm flex items-center gap-2">
-            <CheckCircle2 className="h-4 w-4 shrink-0" strokeWidth={2} aria-hidden="true" />
-            Инстанс уже авторизован
-          </div>
-        )}
+        <p className="text-xs text-text-muted">
+          Перезапуск инстанса GREEN-API. Используйте, если бот «завис» или после
+          смены настроек webhook.
+        </p>
+        <button
+          onClick={reboot}
+          disabled={rebooting}
+          className="px-4 py-2 bg-surface border border-border rounded-xl text-sm text-text hover:border-warning/40 transition-colors flex items-center gap-2 disabled:opacity-50"
+        >
+          <RefreshCw
+            className={`h-4 w-4 ${rebooting ? "animate-spin" : ""}`}
+            strokeWidth={2}
+            aria-hidden="true"
+          />
+          {rebooting ? "Перезапуск…" : "Перезапустить инстанс"}
+        </button>
       </div>
 
       {/* Webhook */}
@@ -243,13 +157,23 @@ export default function SettingsPage() {
           <Link2 className="h-4 w-4" strokeWidth={2} aria-hidden="true" />
           Webhook
         </h3>
+        <p className="text-xs text-text-muted">
+          URL, на который GREEN-API будет присылать входящие сообщения и события
+          доставки. Опционально.
+        </p>
         <div className="flex gap-3">
-          <input type="url" value={webhookUrl} onChange={(e) => setWebhookUrl(e.target.value)}
+          <input
+            type="url"
+            value={webhookUrl}
+            onChange={(e) => setWebhookUrl(e.target.value)}
             placeholder="https://your-domain.com/webhook"
-            className="flex-1 px-4 py-2.5 bg-bg/50 border border-border rounded-xl text-sm text-text placeholder:text-text-muted
-                       focus:outline-none focus:border-accent/50 transition-colors" />
-          <button onClick={setupWebhook} disabled={saving}
-            className="px-5 py-2.5 bg-accent hover:bg-accent-hover text-white text-sm font-medium rounded-xl transition-all disabled:opacity-50 active:scale-95">
+            className="flex-1 px-4 py-2.5 bg-bg/50 border border-border rounded-xl text-sm text-text placeholder:text-text-muted focus:outline-none focus:border-accent/50 transition-colors"
+          />
+          <button
+            onClick={setupWebhook}
+            disabled={saving}
+            className="px-5 py-2.5 bg-accent hover:bg-accent-hover text-bg text-sm font-medium rounded-xl transition-all disabled:opacity-50 active:scale-95"
+          >
             {saving ? "..." : "Установить"}
           </button>
         </div>
@@ -280,6 +204,20 @@ export default function SettingsPage() {
             onSaved={(fresh) => setAntiBanConfig(fresh)}
           />
         )}
+      </div>
+
+      {/* Broadcast Scheduling Suite settings */}
+      <div className="settings-section glass rounded-2xl p-6 space-y-4">
+        <div>
+          <h3 className="text-sm font-semibold text-text-secondary flex items-center gap-2">
+            <KeyRound className="h-4 w-4" strokeWidth={2} aria-hidden="true" />
+            Планирование рассылок
+          </h3>
+          <p className="text-xs text-text-muted mt-1">
+            Approval gate, лимиты Burst и канал Telegram-уведомлений.
+          </p>
+        </div>
+        <SuiteSettingsForm />
       </div>
     </div>
   );
