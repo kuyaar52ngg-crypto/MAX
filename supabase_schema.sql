@@ -60,6 +60,9 @@ CREATE TABLE IF NOT EXISTS public.recipients (
 
 ALTER TABLE public.recipients ENABLE ROW LEVEL SECURITY;
 
+ALTER TABLE public.recipients ADD COLUMN IF NOT EXISTS contact_data JSONB;
+ALTER TABLE public.recipients ADD COLUMN IF NOT EXISTS rendered_message TEXT;
+
 CREATE POLICY "Users see own recipients" ON public.recipients
   FOR SELECT USING (
     EXISTS (SELECT 1 FROM public.broadcasts b WHERE b.id = broadcast_id AND b.user_id = auth.uid())

@@ -9,16 +9,22 @@ datasource db {
 
 
 model Profile {
-  id              String   @id @default(uuid()) @db.Uuid
-  user_id         String   @unique @db.Uuid
-  display_name    String?
-  avatar_url      String?
-  green_api_id    String?
-  green_api_token String?
-  green_api_url   String   @default("https://api.green-api.com")
-  welcomed_at     DateTime?
-  created_at      DateTime @default(now())
-  updated_at      DateTime @updatedAt
+  id                         String    @id @default(uuid()) @db.Uuid
+  user_id                    String    @unique @db.Uuid
+  display_name               String?
+  avatar_url                 String?
+  green_api_id               String?
+  green_api_token            String?
+  green_api_url              String    @default("https://api.green-api.com")
+  welcomed_at                DateTime?
+  // === Broadcast Scheduling Suite (operator-level config) ===
+  approval_required_above_n  Int       @default(0) // 0 = disabled
+  burst_recipient_limit      Int       @default(100)
+  telegram_bot_token         String? // encrypted (AES-256-GCM via INSTANCE_ENCRYPTION_KEY)
+  telegram_chat_id           String?
+  created_at                 DateTime  @default(now())
+  updated_at                 DateTime  @updatedAt
+
   @@map("profiles")
 }
 
@@ -176,4 +182,262 @@ model IncidentLog {
 
   @@index([user_id, created_at])
   @@map("incident_log")
+}
+
+model ScheduledBroadcast {
+  id                     BigInt    @id @default(autoincrement())
+  user_id                String    @db.Uuid
+  name                   String?
+  message                String
+  contacts               Json
+  personalized_messages  Json?
+  use_typing             Boolean   @default(false)
+  delay_seconds          Float     @default(3.0)
+  file_url               String?
+  file_name              String?
+
+  schedule_type          String
+  scheduled_for          DateTime?
+
+  drip_batch_size        Int?
+  drip_interval_minutes  Int?
+  drip_wave_index        Int       @default(0)
+
+  recurring_kind         String?
+  recurring_hour         Int?
+  recurring_minute       Int?
+  recurring_day_of_week  Int?
+  recurring_day_of_month Int?
+  recurring_until        DateTime?
+
+  quiet_hours_enabled    Boolean   @default(false)
+  quiet_hours_start      Int       @default(22)
+  quiet_hours_end        Int       @default(8)
+  respect_recipient_tz   Boolean   @default(false)
+  user_tz                String    @default("UTC")
+
+  status                 String    @default("scheduled")
+  next_run_at            DateTime?
+  last_run_at            DateTime?
+  last_error             String?
+  runs_count             Int       @default(0)
+
+  bot_id_instance        String?
+  bot_api_token          String?
+  bot_api_url            String?
+
+  instance_id            BigInt?
+  adaptive_throttle      Boolean   @default(false)
+  follow_up_chain_id     BigInt?
+  ab_test_id             BigInt?
+
+  // === Broadcast Scheduling Suite extensions ===
+
+  // Send Window mode
+  send_window_start          DateTime?
+  send_window_end            DateTime?
+
+  // Smart-Time mode
+  smart_time_window_days     Int?
+  smart_time_top_n           Int?
+
+  // A/B Time Test
+  ab_time_test_id            BigInt?
+
+  // Auto-Snooze
+  auto_snooze_enabled        Boolean   @default(false)
+  auto_snooze_threshold      Int       @default(3)
+  auto_snooze_minutes        Int       @default(30)
+  auto_snooze_window_minutes Int       @default(15)
+  auto_snooze_count          Int       @default(0)
+
+  // Approval workflow
+  approval_required          Boolean   @default(false)
+  approval_status            String    @default("none") // none | pending | approved | rejected
+  approval_user_id           String?   @db.Uuid
+  approved_at                DateTime?
+  rejection_reason           String?
+
+  // Reschedule lineage
+  parent_broadcast_id        BigInt?
+
+  created_at             DateTime  @default(now())
+  updated_at             DateTime  @updatedAt
+
+  @@index([user_id, status])
+  @@index([status, next_run_at])
+  @@index([approval_user_id, approval_status])
+  @@index([parent_broadcast_id])
+  @@map("scheduled_broadcasts")
+}
+
+model GreenInstance {
+  id            BigInt   @id @default(autoincrement())
+  user_id       String   @db.Uuid
+  name          String
+  id_instance   String
+  api_token     String
+  api_url       String   @default("https://api.green-api.com")
+  status        String   @default("unknown")
+  phone         String?
+  is_primary    Boolean  @default(false)
+  created_at    DateTime @default(now())
+  updated_at    DateTime @updatedAt
+
+  @@unique([user_id, id_instance])
+  @@index([user_id])
+  @@map("green_instances")
+}
+
+model FollowUpChain {
+  id                      BigInt   @id @default(autoincrement())
+  user_id                 String   @db.Uuid
+  scheduled_broadcast_id  BigInt
+  steps                   Json
+  status                  String   @default("active")
+  created_at              DateTime @default(now())
+  updated_at              DateTime @updatedAt
+
+  @@index([user_id, status])
+  @@index([scheduled_broadcast_id])
+  @@map("follow_up_chains")
+}
+
+model FollowUpRecipient {
+  id              BigInt    @id @default(autoincrement())
+  chain_id        BigInt
+  phone           String
+  current_step    Int       @default(0)
+  status          String    @default("pending")
+  last_sent_at    DateTime?
+  next_trigger_at DateTime?
+  exited_at       DateTime?
+
+  @@unique([chain_id, phone])
+  @@index([chain_id, status])
+  @@index([next_trigger_at])
+  @@map("follow_up_recipients")
+}
+
+model ABTest {
+  id                      BigInt    @id @default(autoincrement())
+  user_id                 String    @db.Uuid
+  scheduled_broadcast_id  BigInt
+  variants                Json
+  test_percentage         Int
+  wait_hours              Int       @default(24)
+  winner_variant_id       String?
+  status                  String    @default("running")
+  started_at              DateTime  @default(now())
+  completed_at            DateTime?
+
+  @@index([user_id, status])
+  @@map("ab_tests")
+}
+
+model ABTestRecipient {
+  id          BigInt    @id @default(autoincrement())
+  ab_test_id  BigInt
+  phone       String
+  variant_id  String
+  delivered   Boolean   @default(false)
+  read        Boolean   @default(false)
+  replied     Boolean   @default(false)
+  sent_at     DateTime?
+
+  @@unique([ab_test_id, phone])
+  @@index([ab_test_id, variant_id])
+  @@map("ab_test_recipients")
+}
+
+model CalendarException {
+  id              BigInt   @id @default(autoincrement())
+  user_id         String   @db.Uuid
+  name            String
+  start_date      DateTime @db.Date
+  end_date        DateTime @db.Date
+  recurring_type  String?
+  recurring_value Int?
+  created_at      DateTime @default(now())
+
+  @@index([user_id])
+  @@map("calendar_exceptions")
+}
+
+model ScheduleTemplate {
+  id         BigInt   @id @default(autoincrement())
+  user_id    String   @db.Uuid
+  name       String
+  config     Json
+  created_at DateTime @default(now())
+
+  @@index([user_id])
+  @@map("schedule_templates")
+}
+
+// ============================================================================
+// Broadcast Scheduling Suite — new models
+// ============================================================================
+
+model ABTimeTest {
+  id                     BigInt    @id @default(autoincrement())
+  user_id                String    @db.Uuid
+  scheduled_broadcast_id BigInt
+  slots                  Json // int[2..4], hours 0-23, distinct
+  winner_slot            Int?
+  wait_hours             Int       @default(24)
+  status                 String    @default("running") // running | waiting | completed | cancelled
+  started_at             DateTime  @default(now())
+  completed_at           DateTime?
+
+  @@index([user_id, status])
+  @@index([scheduled_broadcast_id])
+  @@map("ab_time_tests")
+}
+
+model ABTimeTestRecipient {
+  id              BigInt    @id @default(autoincrement())
+  ab_time_test_id BigInt
+  phone           String
+  slot_hour       Int // 0-23, the assigned slot
+  delivered       Boolean   @default(false)
+  read            Boolean   @default(false)
+  replied         Boolean   @default(false)
+  sent_at         DateTime?
+
+  @@unique([ab_time_test_id, phone])
+  @@index([ab_time_test_id, slot_hour])
+  @@map("ab_time_test_recipients")
+}
+
+model Notification {
+  id                  BigInt    @id @default(autoincrement())
+  user_id             String    @db.Uuid
+  kind                String // Notification_Event_Kind
+  payload             Json
+  preference_snapshot Json // { event_kind: { channel: enabled } } at creation
+  read_at             DateTime?
+  dispatch_status     String    @default("pending") // pending | delivered | failed
+  dispatch_attempts   Int       @default(0)
+  dispatch_error      String?
+  dispatched_channels String[] // ["in_app", "email"]
+  created_at          DateTime  @default(now())
+
+  @@index([user_id, read_at])
+  @@index([dispatch_status, created_at])
+  @@map("notifications")
+}
+
+model NotificationPreference {
+  id         BigInt   @id @default(autoincrement())
+  user_id    String   @db.Uuid
+  event_kind String // see glossary
+  channel    String // in_app | email | telegram
+  enabled    Boolean  @default(true)
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  @@unique([user_id, event_kind, channel])
+  @@index([user_id])
+  @@map("notification_preferences")
 }

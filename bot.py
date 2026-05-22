@@ -94,6 +94,9 @@ class MaxBot:
         *,
         rate_limiter: Optional[RateLimiter] = None,
         rate_limit_kind: str = "check",
+        burst_mode: bool = False,
+        burst_throttle_state: str = "normal",
+        burst_message_index: int = 0,
     ):
         """Выполнить HTTP-запрос к GREEN-API с опциональным rate limiting.
 
@@ -115,6 +118,20 @@ class MaxBot:
                 возвращается ``None``.
             rate_limit_kind: ``"check"`` для ``checkAccount``-подобных
                 запросов или ``"broadcast"`` для отправки сообщений.
+            burst_mode: True, когда вызов идёт из burst-режима
+                ``ScheduledBroadcast`` (Req 8.2/8.3, задача 7.1).
+                Пробрасывается в :meth:`RateLimiter.acquire`, который
+                заменяет случайный jitter на
+                :meth:`scheduling.burst_engine.BurstEngine.delay_for`
+                и пропускает ``long_pause_every_n``. Применяется только
+                для ``rate_limit_kind="broadcast"``; для ``"check"``
+                игнорируется (checkAccount-вызовы не относятся к
+                burst-pacing).
+            burst_throttle_state: ``"normal"``/``"slowed"`` — текущее
+                состояние ``Adaptive_Throttle`` (Req 8.4). Игнорируется
+                при ``burst_mode=False``.
+            burst_message_index: 0-based индекс сообщения в очереди
+                (для будущих расширений ``BurstEngine.delay_for``).
 
         Returns:
             Распарсенный JSON-ответ или ``None`` при сетевой/HTTP ошибке
@@ -130,7 +147,12 @@ class MaxBot:
         retry = 0
         while True:
             if rate_limiter is not None:
-                rate_limiter.acquire(kind=rate_limit_kind)
+                rate_limiter.acquire(
+                    kind=rate_limit_kind,
+                    burst_mode=burst_mode,
+                    burst_throttle_state=burst_throttle_state,
+                    burst_message_index=burst_message_index,
+                )
             try:
                 if method == 'POST':
                     response = requests.post(url, json=payload, timeout=timeout)
@@ -439,6 +461,10 @@ class MaxBot:
                   cancel_event: Optional[threading.Event] = None,
                   progress_cb_after_each: Optional[
                       Callable[[int, dict], None]
+                  ] = None,
+                  burst_mode: bool = False,
+                  burst_throttle_state_provider: Optional[
+                      Callable[[], str]
                   ] = None):
         """Рассылка с контролем очереди и опциональной анти-бан-защитой.
 
@@ -469,6 +495,24 @@ class MaxBot:
                 заменяет ``progress_cb``, а дополняет его — нужен
                 ``Bulk_Operation`` worker'у в ``app.py`` для записи
                 прогресса в ``OperationRun`` и heartbeat.
+            burst_mode: True для ``ScheduledBroadcast.schedule_type ==
+                "burst"`` (broadcast-scheduling-suite Req 8.2/8.3,
+                задача 7.1). Когда True, ``RateLimiter.acquire``
+                заменяет случайный jitter на
+                :meth:`scheduling.burst_engine.BurstEngine.delay_for`
+                и пропускает ``long_pause_every_n``.
+                Поскольку Req 8.4 требует обязательно включённого
+                ``Adaptive_Throttle`` в burst-режиме, caller (worker
+                в ``app.py``) обязан передать действующий ``rate_limiter``
+                независимо от ``broadcast.adaptive_throttle`` флага.
+            burst_throttle_state_provider: callable без аргументов,
+                возвращающий текущее состояние ``Adaptive_Throttle``
+                (``"normal"`` или ``"slowed"``). Опрашивается перед
+                каждым отправляемым сообщением, чтобы реализовать
+                Req 8.5: при появлении 429 state переходит в slowed,
+                а после серии успешных — обратно в normal, что даёт
+                «recovery toward delay_min на следующей итерации»
+                state machine. Если ``None``, считается ``"normal"``.
 
         Returns:
             Список словарей ``{phone, status, message_id,
@@ -481,8 +525,24 @@ class MaxBot:
             Rate429Error: когда исчерпан лимит ретраев на HTTP 429
                 (Requirement 4.3). Прокидывается наружу.
         """
-        logger.info(f"Рассылка: {len(contacts)} контактов.")
+        logger.info(
+            "Рассылка: %d контактов%s.",
+            len(contacts),
+            " (burst mode)" if burst_mode else "",
+        )
         results = []
+
+        # Burst Mode требует rate_limiter (Req 8.4: Adaptive_Throttle
+        # принудительно включён). Без него BurstEngine.delay_for не
+        # будет вызван — это нарушит инвариант. Логируем warning и
+        # продолжаем как обычная рассылка, чтобы не сломать legacy
+        # вызовы; правильная плумба идёт через worker в app.py.
+        if burst_mode and rate_limiter is None:
+            logger.warning(
+                "broadcast(burst_mode=True) вызван без rate_limiter — "
+                "burst-pacing проигнорирован, поведение совместимо с "
+                "legacy режимом"
+            )
 
         for i, contact in enumerate(contacts):
             # Requirement 5.2: проверка отмены перед каждым контактом.
@@ -505,6 +565,25 @@ class MaxBot:
                 effective_template = message
             rendered_message = render_message_template(effective_template, contact_data)
 
+            # В burst-mode опрашиваем Adaptive_Throttle перед каждым
+            # сообщением — это даёт правильную реакцию на 429 (Req 8.5):
+            # после 429 state становится "slowed", следующий acquire
+            # увеличит паузу; после серии успехов state вернётся в
+            # "normal", и burst recovery toward delay_min завершится
+            # на той же итерации state machine.
+            current_throttle_state = "normal"
+            if burst_mode and burst_throttle_state_provider is not None:
+                try:
+                    current_throttle_state = (
+                        burst_throttle_state_provider() or "normal"
+                    )
+                except Exception:
+                    logger.exception(
+                        "burst_throttle_state_provider failed, defaulting "
+                        "to 'normal'"
+                    )
+                    current_throttle_state = "normal"
+
             # Ждём, пока очередь освободится
             while self.get_queue_size() >= max_queue:
                 logger.warning("Очередь заполнена. Ожидание 10 сек...")
@@ -526,6 +605,9 @@ class MaxBot:
                 {"phoneNumber": int(phone)} if phone else None,
                 rate_limiter=rate_limiter,
                 rate_limit_kind="broadcast",
+                burst_mode=burst_mode,
+                burst_throttle_state=current_throttle_state,
+                burst_message_index=i,
             )
             exist = bool(check_resp.get('exist')) if check_resp else False
             chat_id = check_resp.get('chatId') if check_resp else None
@@ -538,6 +620,9 @@ class MaxBot:
                         {"chatId": chat_id},
                         rate_limiter=rate_limiter,
                         rate_limit_kind="broadcast",
+                        burst_mode=burst_mode,
+                        burst_throttle_state=current_throttle_state,
+                        burst_message_index=i,
                     )
                     time.sleep(1.5)
 
@@ -553,6 +638,9 @@ class MaxBot:
                         },
                         rate_limiter=rate_limiter,
                         rate_limit_kind="broadcast",
+                        burst_mode=burst_mode,
+                        burst_throttle_state=current_throttle_state,
+                        burst_message_index=i,
                     )
                 else:
                     response = self._make_request(
@@ -560,6 +648,9 @@ class MaxBot:
                         {"chatId": chat_id, "message": rendered_message},
                         rate_limiter=rate_limiter,
                         rate_limit_kind="broadcast",
+                        burst_mode=burst_mode,
+                        burst_throttle_state=current_throttle_state,
+                        burst_message_index=i,
                     )
 
                 if response and 'idMessage' in response:
@@ -604,6 +695,10 @@ class MaxBot:
                                      cancel_event: Optional[threading.Event] = None,
                                      progress_cb_after_each: Optional[
                                          Callable[[int, dict], None]
+                                     ] = None,
+                                     burst_mode: bool = False,
+                                     burst_throttle_state_provider: Optional[
+                                         Callable[[], str]
                                      ] = None):
         """
         Рассылка с локальным файлом: один раз загружает файл в GREEN-API
@@ -617,6 +712,9 @@ class MaxBot:
         Дополнительные kwargs (``rate_limiter``, ``cancel_event``,
         ``progress_cb_after_each``) пробрасываются в :meth:`broadcast` для
         анти-бан-защиты — Requirements 2.1, 5.2.
+        Параметры ``burst_mode`` и ``burst_throttle_state_provider``
+        пробрасываются для broadcast-scheduling-suite Req 8.2/8.3/8.5
+        (задача 7.1).
         """
         upload = self._upload_local_file(file_path)
         if not upload or 'urlFile' not in upload:
@@ -648,6 +746,8 @@ class MaxBot:
             rate_limiter=rate_limiter,
             cancel_event=cancel_event,
             progress_cb_after_each=progress_cb_after_each,
+            burst_mode=burst_mode,
+            burst_throttle_state_provider=burst_throttle_state_provider,
         )
 
     # ── УПРАВЛЕНИЕ ГРУППАМИ ───────────────────────────────────────────────────

@@ -1,4 +1,5 @@
 import os
+import atexit
 import csv
 import json
 import queue
@@ -9,6 +10,7 @@ import time
 import sys
 from dataclasses import asdict, fields
 from datetime import datetime, timedelta
+from typing import Optional
 from flask import Flask, request, jsonify, Response, stream_with_context
 from flask_cors import CORS
 from dotenv import load_dotenv
@@ -23,6 +25,24 @@ from anti_ban.audit import audit_logger
 from anti_ban.payload import deserialize_payload, PayloadValidationError
 from anti_ban.watchdog import Watchdog
 from anti_ban.state_monitor import StateMonitor
+# Пакет ``scheduling`` подключается к приложению уже на этапе bootstrap'а,
+# чтобы стратегии (``WindowEngine``, ``SmartTimeEngine``,
+# ``ABTimeEngine``, ``BurstEngine``) могли быть зарегистрированы в
+# ``ScheduleModeEngine`` и daemon-потоки (``AutoSnoozeWatcher``,
+# ``NotificationDispatcher``) — стартованы рядом с существующим
+# ``BroadcastScheduler`` и ``Watchdog`` (см. задачу 6.11 в
+# ``broadcast-scheduling-suite/tasks.md``). Сам импорт пакета
+# по-прежнему side-effect-free; eager-инициализация выполняется ниже,
+# в блоке ``BROADCAST-SCHEDULING-SUITE``.
+import scheduling  # noqa: F401  (side-effect-free package import)
+from scheduling.activity_analyzer import ActivityAnalyzer
+from scheduling.engine import ScheduleModeEngine
+from scheduling.window_engine import WindowEngine
+from scheduling.smart_time_engine import SmartTimeEngine
+from scheduling.ab_time_engine import ABTimeEngine
+from scheduling.burst_engine import BurstEngine
+from scheduling.auto_snooze_watcher import AutoSnoozeWatcher
+from scheduling.notification_dispatcher import NotificationDispatcher
 import db
 
 def get_data_path():
@@ -269,6 +289,101 @@ def _ensure_state_monitor() -> StateMonitor:
 # Watchdog запускается немедленно при импорте модуля, чтобы охватывать
 # любые операции, стартующие сразу после загрузки приложения.
 _ensure_watchdog()
+
+
+# Planner of broadcasts (background thread polling Postgres).
+# If DATABASE_URL is not set, the module logs a warning and does nothing,
+# so local dev without Supabase keeps working.
+try:
+    from scheduler import scheduler as _broadcast_scheduler
+    _broadcast_scheduler.start()
+except Exception:
+    logger.exception("BroadcastScheduler did not start (non-critical)")
+
+
+# ── BROADCAST-SCHEDULING-SUITE: Schedule_Mode_Engine + daemon threads ─────
+#
+# Wire-up для спеки ``broadcast-scheduling-suite`` (задача 6.11):
+#
+#   1. Singleton ``ActivityAnalyzer`` (1-час LRU cache) — общий ресурс
+#      для ``SmartTimeEngine`` и ``ABTimeEngine``. Кэш per-process,
+#      поэтому держим его одним инстансом.
+#   2. Singleton ``ScheduleModeEngine`` со всеми 4 зарегистрированными
+#      стратегиями (``window`` / ``smart_time`` / ``ab_time`` / ``burst``).
+#      Этот объект подхватывается ``BroadcastScheduler._tick()`` через
+#      late-import ``import app`` — см. ``scheduler.py``.
+#   3. Eager-start ``AutoSnoozeWatcher`` (Req 9.2) и
+#      ``NotificationDispatcher`` (Req 10.4) как daemon-потоков —
+#      аналогично существующему ``Watchdog`` (см. ``_ensure_watchdog``
+#      выше). Если ``DATABASE_URL`` не задан, оба потока сами по себе
+#      no-op'ятся внутри (см. реализации), поэтому защитный try/except
+#      сохраняет non-critical поведение приложения.
+#   4. ``atexit.register(...)`` для graceful stop — это полезно в
+#      development, где Flask-process может перезапускаться чаще, чем
+#      перезагружается ОС, и позволяет корректно завершить
+#      незаконченные tick'и без потери данных.
+
+#: Module-level singleton ``ActivityAnalyzer`` — нужен SmartTime и AB-Time
+#: стратегиям, держится в одном экземпляре, чтобы 1-часовой LRU-кэш
+#: гистограмм был общим для всех вызовов в процессе.
+activity_analyzer = ActivityAnalyzer()
+
+#: Module-level singleton ``ScheduleModeEngine`` с зарегистрированными
+#: стратегиями. Используется как из ``BroadcastScheduler._tick()`` (через
+#: late-import ``app``), так и из PreFlight Preview / тестов.
+schedule_mode_engine = ScheduleModeEngine()
+schedule_mode_engine.register("window", WindowEngine())
+schedule_mode_engine.register("smart_time", SmartTimeEngine(activity_analyzer))
+schedule_mode_engine.register("ab_time", ABTimeEngine(activity_analyzer))
+schedule_mode_engine.register("burst", BurstEngine())
+
+#: Module-level singletons daemon-потоков. Создаём их ленивыми
+#: переменными, чтобы атрибуты модуля существовали даже при
+#: фейле ``start()`` — это упрощает graceful stop через ``atexit``.
+auto_snooze_watcher: AutoSnoozeWatcher | None = None
+notification_dispatcher: NotificationDispatcher | None = None
+
+try:
+    auto_snooze_watcher = AutoSnoozeWatcher()
+    auto_snooze_watcher.start()
+except Exception:
+    logger.exception(
+        "AutoSnoozeWatcher did not start (non-critical, suite Req 9.2)"
+    )
+
+try:
+    notification_dispatcher = NotificationDispatcher()
+    notification_dispatcher.start()
+except Exception:
+    logger.exception(
+        "NotificationDispatcher did not start (non-critical, suite Req 10.4)"
+    )
+
+
+def _suite_graceful_stop() -> None:
+    """Корректно остановить daemon-потоки спеки при shutdown.
+
+    Вызывается через :mod:`atexit`. Каждый stop-вызов идемпотентен и
+    обёрнут в try/except, чтобы один сбойный поток не помешал
+    остановить остальные. Сами потоки — daemon, поэтому при жёстком
+    SIGKILL/`os._exit` они умрут вместе с процессом и без этого
+    callback'а; этот hook нужен для graceful-сценариев (CTRL+C в dev,
+    `sys.exit()` в тестах, нормальное завершение Flask).
+    """
+
+    for name, thread in (
+        ("AutoSnoozeWatcher", auto_snooze_watcher),
+        ("NotificationDispatcher", notification_dispatcher),
+    ):
+        if thread is None:
+            continue
+        try:
+            thread.stop()
+        except Exception:
+            logger.exception("%s.stop() failed during atexit", name)
+
+
+atexit.register(_suite_graceful_stop)
 
 
 def clean_phone(value) -> str:
@@ -745,6 +860,7 @@ def _run_broadcast_worker(
     config,
     bot_instance: MaxBot,
     start_index: int = 0,
+    schedule_type: Optional[str] = None,
 ):
     """Worker-поток `Broadcast_Service`.
 
@@ -761,8 +877,59 @@ def _run_broadcast_worker(
     ``contacts[start_index:]``, а в ``progress_after_each`` индекс
     смещается на ``start_index``, чтобы ``OperationRun.processed`` и
     ``last_processed_index`` продолжали возрастать монотонно.
+
+    Параметр ``schedule_type`` (broadcast-scheduling-suite, задача 7.1):
+    для ``schedule_type == "burst"`` worker:
+
+    * включает ``burst_mode=True`` в ``bot.broadcast`` — Req 8.2/8.3:
+      :meth:`scheduling.burst_engine.BurstEngine.delay_for` заменяет
+      случайный jitter, ``long_pause_every_n`` пропускается;
+    * передаёт ``burst_throttle_state_provider``, который опрашивает
+      Adaptive_Throttle перед каждым сообщением — Req 8.5: после 429
+      state становится ``slowed`` и acquire(...) ждёт ``delay_min*1.5``;
+      после серии успехов state возвращается в ``normal`` и burst
+      recovery toward ``delay_min`` завершается на следующей итерации
+      Adaptive_Throttle state machine.
+    * ``Adaptive_Throttle`` принудительно включён независимо от
+      ``broadcast.adaptive_throttle`` флага (Req 8.4) — это
+      обеспечивается тем, что worker всегда передаёт ``rate_limiter``
+      в burst-режиме (текущая реализация и так всегда передаёт его
+      во все ветви, поэтому достаточно ничего не отключать).
+
+    Note (broadcast-scheduling-suite, задача 7.2 — Auto-Snooze hot-loop):
+        После каждого ``audit_logger.log_incident(...)`` ниже мы
+        НАМЕРЕННО НЕ инкрементируем in-memory счётчик инцидентов и
+        НЕ обращаемся к ``ScheduledBroadcast`` напрямую. Решение —
+        полагаться на собственный polling-tick
+        :class:`scheduling.auto_snooze_watcher.AutoSnoozeWatcher`
+        (тик 30 секунд, читает ``IncidentLog`` напрямую через
+        ``_count_incidents`` со строгой фильтрацией по
+        ``operation_run_id``, см. Property 17). Аргументы:
+
+        * AutoSnoozeWatcher уже идемпотентен и сам управляет
+          atomic-инкрементом ``auto_snooze_count`` плюс эскалацией
+          после третьего snooze (Req 9.6).
+        * In-memory счётчик в worker-thread терялся бы при рестарте
+          процесса и при resume (новая ветка ``_run_broadcast_worker``
+          с тем же ``run_id``), что нарушило бы инвариант «считаем
+          только same-run incidents» из Req 9.8.
+        * Дополнительная in-memory логика дублировала бы SQL-агрегацию
+          и создавала риск рассинхрона. Watcher's polling tick — единый
+          источник истины, что соответствует архитектурному принципу
+          «Auto-Snooze не дублирует Adaptive_Throttle» (см. design.md).
+
+        Цена решения — задержка реакции до 30 секунд на накопление
+        инцидентов. Это приемлемо: Auto-Snooze — макро-уровень
+        защиты, а micro-уровень (per-message backoff) уже покрывается
+        Adaptive_Throttle и :class:`anti_ban.rate_limiter.RateLimiter`.
     """
     global _broadcast_active
+
+    # Burst-режим определяется по schedule_type (Req 8.x). Worker
+    # принимает schedule_type явным параметром (а не читает из БД)
+    # для упрощения тестирования: в legacy-вызовах из /api/broadcast
+    # schedule_type=None означает обычный режим.
+    burst_mode = schedule_type == "burst"
 
     total = len(contacts)
     counters = {'sent': 0, 'not_found': 0, 'failed': 0}
@@ -821,6 +988,16 @@ def _run_broadcast_worker(
             )
         registry.heartbeat(run_id)
 
+    # Burst-mode plumbing (broadcast-scheduling-suite, задача 7.1):
+    # provider опрашивает Adaptive_Throttle перед каждым сообщением.
+    # На текущем этапе AdaptiveThrottle ещё не интегрирован в
+    # `_run_broadcast_worker` напрямую (это сделает enhanced-broadcast-
+    # scheduling task 5.x — wire-up); пока возвращаем "normal".
+    # Когда AT-instance будет проброшен в worker, заменим на
+    # `lambda: throttle.state.mode`. Property 15 будет соблюдён в
+    # любом случае, потому что `BurstEngine.delay_for(...) >= delay_min`.
+    burst_throttle_state_provider = (lambda: "normal") if burst_mode else None
+
     try:
         if is_multipart and uploaded_path:
             bot_instance.broadcast_with_uploaded_file(
@@ -830,6 +1007,8 @@ def _run_broadcast_worker(
                 rate_limiter=rate_limiter,
                 cancel_event=cancel_event,
                 progress_cb_after_each=progress_after_each,
+                burst_mode=burst_mode,
+                burst_throttle_state_provider=burst_throttle_state_provider,
             )
         else:
             bot_instance.broadcast(
@@ -840,6 +1019,8 @@ def _run_broadcast_worker(
                 rate_limiter=rate_limiter,
                 cancel_event=cancel_event,
                 progress_cb_after_each=progress_after_each,
+                burst_mode=burst_mode,
+                burst_throttle_state_provider=burst_throttle_state_provider,
             )
 
         # Если cancel_event сработал внутри bot.broadcast — это не

@@ -6,7 +6,14 @@
 * минимальный пол паузы для рассылки (Requirement 2.1, 2.2);
 * "длинная пауза" каждые N запросов (Requirement 1.1, 1.7);
 * sliding-window лимит N запросов в T секунд (Requirement 1.3);
-* экспоненциальный backoff с jitter после HTTP 429 (Requirement 4.1, 4.2).
+* экспоненциальный backoff с jitter после HTTP 429 (Requirement 4.1, 4.2);
+* burst-mode hook для ``broadcast-scheduling-suite`` (Requirements 8.2,
+  8.3, 8.5; задача 7.1): при ``acquire(burst_mode=True)`` шаги «jitter»
+  и «long pause» заменяются вызовом
+  :func:`scheduling.burst_engine.BurstEngine.delay_for`, который
+  возвращает фиксированную паузу ``delay_min`` (или ``delay_min * 1.5``
+  в slowed-state). Sliding-window и pending-backoff после 429 при этом
+  продолжают применяться без изменений — anti-ban-фундамент сохранён.
 
 Все источники недетерминизма (`time.time`, `time.sleep`, `random.Random`)
 внедряются через DI, чтобы property-тесты могли подменять их на
@@ -85,7 +92,14 @@ class RateLimiter:
     # Public API                                                          #
     # ------------------------------------------------------------------ #
 
-    def acquire(self, *, kind: _AcquireKind) -> None:
+    def acquire(
+        self,
+        *,
+        kind: _AcquireKind,
+        burst_mode: bool = False,
+        burst_throttle_state: str = "normal",
+        burst_message_index: int = 0,
+    ) -> None:
         """Заблокировать поток до момента, когда можно делать следующий запрос.
 
         Шаги:
@@ -99,13 +113,39 @@ class RateLimiter:
              плюс ``rng.uniform(0, broadcast_jitter_max)``. Этим
              гарантируется пол ``broadcast_delay_min`` даже если
              пользователь выставил ``delay_min`` ниже (Requirement 2.2).
+           * При ``burst_mode=True`` (Req 8.2) jitter и broadcast-floor
+             игнорируются: задержка приходит из
+             :meth:`scheduling.burst_engine.BurstEngine.delay_for`
+             и равна ``delay_min`` (``normal``) либо ``delay_min*1.5``
+             (``slowed``). Это даёт максимальную скорость в пределах
+             анти-бан floor.
         3. Инкрементируем счётчик запросов и, если он кратен
            ``long_pause_every_n`` (и ``long_pause_every_n > 0``),
            добавляем ``long_pause_seconds`` — Requirement 1.7.
+           При ``burst_mode=True`` шаг ПОЛНОСТЬЮ ПРОПУСКАЕТСЯ —
+           Requirement 8.3 требует не вставлять long pause в burst.
         4. Sliding window (Requirement 1.3): удаляем из ``_window``
            метки старше ``now - sliding_window_t``; пока в окне
            ``>= sliding_window_n`` запросов — спим до момента, когда
            старейшая метка выйдет за окно, и повторяем.
+           Это выполняется и в burst-mode: SW-лимит — это hard
+           anti-ban-инвариант, его burst не отменяет.
+
+        Args:
+            kind: ``"check"`` для ``checkAccount``-подобных запросов
+                или ``"broadcast"`` для отправки сообщений.
+            burst_mode: True, когда вызов идёт из burst-режима
+                (``ScheduledBroadcast.schedule_type == "burst"``).
+                Активирует ветку, описанную выше (Req 8.2/8.3).
+            burst_throttle_state: текущее состояние ``Adaptive_Throttle``
+                — передаётся в ``BurstEngine.delay_for``. Допустимые
+                значения — ``"normal"`` или ``"slowed"``; ``"paused"``
+                запрещён, потому что paused-broadcast не должен
+                запрашивать delay (worker сам ставит на паузу).
+            burst_message_index: 0-based индекс отправляемого сообщения.
+                В текущей реализации ``BurstEngine.delay_for`` индекс
+                игнорируется (Req 8.3 — нет long-pause-каденса), но
+                параметр сохранён для будущих расширений.
 
         Raises:
             ValueError: если ``kind`` не равен ``"check"`` или
@@ -118,25 +158,60 @@ class RateLimiter:
             )
 
         # --- Шаг 1: pending backoff после HTTP 429 -----------------------
+        # Этот шаг НЕ зависит от burst_mode: даже в burst мы обязаны
+        # honor'ить backoff после 429. Adaptive_Throttle при этом
+        # переведёт state в slowed → следующий acquire(...) использует
+        # увеличенный multiplier; как только AT увидит серию успешных
+        # отправок, state вернётся в normal и burst recovery toward
+        # delay_min завершится (Req 8.5).
         with self._lock:
             backoff = self._pending_backoff
             self._pending_backoff = 0.0
         if backoff > 0:
             self._sleep(backoff)
 
-        # --- Шаг 2: случайный jitter ------------------------------------
-        # rng.uniform под локом, потому что random.Random не thread-safe.
-        with self._lock:
-            jitter_sleep = self._compute_jitter(kind)
-        if jitter_sleep > 0:
-            self._sleep(jitter_sleep)
+        # --- Шаг 2: задержка между сообщениями --------------------------
+        if burst_mode and kind == "broadcast":
+            # Burst Mode: фиксированная пауза из BurstEngine.delay_for
+            # вместо случайного jitter (Req 8.2).
+            #
+            # Late import: scheduling.burst_engine импортирует
+            # AntiBanConfig из anti_ban.config — обратный импорт
+            # ``rate_limiter -> burst_engine`` создаёт цикл при
+            # обычной загрузке модуля. Делаем import внутри метода,
+            # чтобы он сработал только в момент использования burst-
+            # режима (а в обычной рассылке rate_limiter работает
+            # совершенно независимо от scheduling-пакета).
+            from scheduling.burst_engine import BurstEngine
+
+            delay = BurstEngine.delay_for(
+                burst_message_index, self._config, burst_throttle_state
+            )
+            if delay > 0:
+                self._sleep(delay)
+        else:
+            # Обычный режим: rng.uniform под локом, потому что
+            # random.Random не thread-safe.
+            with self._lock:
+                jitter_sleep = self._compute_jitter(kind)
+            if jitter_sleep > 0:
+                self._sleep(jitter_sleep)
 
         # --- Шаг 3: long pause каждые N запросов ------------------------
+        # В burst-mode этот шаг ПОЛНОСТЬЮ ПРОПУСКАЕТСЯ (Req 8.3):
+        # «THE Broadcast_Worker SHALL skip every long pause that
+        # would normally be inserted by AntiBanConfig.long_pause_every_n
+        # and SHALL NOT call the long-pause routine.»
+        # Счётчик _request_counter всё равно инкрементируем, чтобы
+        # после возврата в обычный режим long-pause-каденс начинался
+        # с естественной точки.
         with self._lock:
             self._request_counter += 1
             every_n = self._config.long_pause_every_n
             long_pause_triggered = (
-                every_n > 0 and self._request_counter % every_n == 0
+                not burst_mode
+                and every_n > 0
+                and self._request_counter % every_n == 0
             )
             long_pause_duration = self._config.long_pause_seconds
         if long_pause_triggered and long_pause_duration > 0:
