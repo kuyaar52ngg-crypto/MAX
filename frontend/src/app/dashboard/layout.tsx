@@ -5,7 +5,6 @@ import { usePathname, useRouter } from "next/navigation";
 import Link from "next/link";
 import {
   BarChart3,
-  Bot,
   CalendarClock,
   ChevronDown,
   ClipboardList,
@@ -16,7 +15,6 @@ import {
   Settings,
   UserCheck,
   UserCircle,
-  Users,
   type LucideIcon,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
@@ -136,7 +134,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     <div className="min-h-screen bg-bg text-text">
       <header className="sticky top-0 z-50 px-3 py-3">
         <div
-          className={`mx-auto grid grid-cols-[48px_minmax(0,1fr)_minmax(190px,auto)] items-center gap-6 px-4 transition-all duration-300 lg:px-5 ${
+          className={`mx-auto flex items-center gap-3 px-4 transition-all duration-300 lg:px-5 ${
             scrolled
               ? "max-w-5xl rounded-xl border border-border bg-surface/95 py-2 shadow-lg backdrop-blur-2xl"
               : "max-w-7xl border-b border-border bg-bg/90 py-1 backdrop-blur-2xl"
@@ -156,7 +154,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             />
           </Link>
 
-          <nav className="no-scrollbar flex min-w-0 justify-center gap-1.5 overflow-x-auto">
+          <nav className="no-scrollbar flex min-w-0 flex-1 justify-center gap-1 overflow-x-auto">
             {NAV_ITEMS.map((item) => {
               const isActive =
                 item.href === "/dashboard"
@@ -164,33 +162,47 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                   : pathname.startsWith(item.href);
               const Icon = item.icon;
 
+              // Лейбл показываем только на xl-экранах (≥1280px) И когда
+              // хедер не "scrolled". В остальных случаях остаётся одна
+              // иконка с tooltip-ом — это спасает от обрезки на 7+ пунктах
+              // меню + StateBadge + NotificationCenter + UserMenu.
+              const showLabel = !scrolled;
+
               return (
                 <Link
                   key={item.href}
                   href={item.href}
-                  className={`inline-flex shrink-0 items-center gap-2 rounded-lg px-3 font-medium transition-all ${
-                    scrolled ? "py-1.5 text-xs" : "py-2 text-sm"
-                  }
-                    ${isActive
+                  title={item.label}
+                  aria-label={item.label}
+                  className={`inline-flex shrink-0 items-center gap-2 rounded-lg font-medium transition-all ${
+                    scrolled
+                      ? "h-8 w-8 justify-center text-xs"
+                      : showLabel
+                        ? "h-9 px-2.5 text-sm xl:px-3"
+                        : "h-9 w-9 justify-center text-sm"
+                  } ${
+                    isActive
                       ? "bg-accent text-bg shadow-sm"
                       : "text-text-muted hover:bg-surface-hover hover:text-text"
-                    }`}
+                  }`}
                 >
-                  <Icon className="h-4 w-4" strokeWidth={2} />
-                  {item.label}
+                  <Icon className="h-4 w-4 shrink-0" strokeWidth={2} />
+                  {showLabel && (
+                    <span className="hidden xl:inline">{item.label}</span>
+                  )}
                 </Link>
               );
             })}
           </nav>
 
-          <div className="relative flex items-center gap-2 justify-self-end">
+          <div className="relative flex shrink-0 items-center gap-2">
             <HeaderStateBadge />
             <NotificationCenter />
             <button
               type="button"
               onClick={() => setAccountOpen((value) => !value)}
               aria-expanded={accountOpen}
-              className={`inline-flex items-center gap-3 rounded-xl border px-2.5 text-left transition-all hover:border-border-focus hover:bg-surface-hover ${
+              className={`inline-flex items-center gap-2 rounded-xl border px-2 text-left transition-all hover:border-border-focus hover:bg-surface-hover ${
                 scrolled ? "h-9" : "h-10"
               } ${
                 pathname.startsWith("/dashboard/settings") || pathname.startsWith("/dashboard/profile")
@@ -198,7 +210,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                   : "border-border bg-surface text-text"
               }`}
             >
-              <span className={`flex h-7 w-7 items-center justify-center rounded-lg text-xs font-bold overflow-hidden ${
+              <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-xs font-bold overflow-hidden ${
                 pathname.startsWith("/dashboard/settings") || pathname.startsWith("/dashboard/profile")
                   ? "bg-bg text-accent"
                   : "bg-bg-elevated text-text"
@@ -214,11 +226,11 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                   userInitial
                 )}
               </span>
-              <span className="hidden min-w-0 sm:block">
-                <span className="block text-xs font-bold leading-4 truncate max-w-[170px]">
+              <span className="hidden min-w-0 lg:block">
+                <span className="block text-xs font-bold leading-4 truncate max-w-[140px]">
                   {userName || "Личный кабинет"}
                 </span>
-                <span className={`block max-w-[170px] truncate text-[11px] leading-4 ${
+                <span className={`block max-w-[140px] truncate text-[11px] leading-4 ${
                   pathname.startsWith("/dashboard/settings") || pathname.startsWith("/dashboard/profile")
                     ? "text-bg/70"
                     : "text-text-muted"
@@ -226,7 +238,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                   {userEmail || "Профиль MAX"}
                 </span>
               </span>
-              <ChevronDown className={`h-4 w-4 transition-transform ${accountOpen ? "rotate-180" : ""}`} strokeWidth={2} />
+              <ChevronDown className={`h-4 w-4 shrink-0 transition-transform ${accountOpen ? "rotate-180" : ""}`} strokeWidth={2} />
             </button>
 
             {accountOpen && (

@@ -14,6 +14,11 @@
  *
  * Ошибки сети не сбрасывают последнее известное состояние, чтобы
  * шапка не моргала при кратковременных разрывах соединения.
+ *
+ * UI:
+ *   - на ≥lg-экранах рендерим полный `StateBadge` с текстом;
+ *   - на узких — компактный цветной dot с tooltip-ом (хедер итак тесный
+ *     из-за 7 пунктов меню + NotificationCenter + UserMenu).
  */
 
 import { useEffect, useState } from "react";
@@ -26,6 +31,26 @@ import type { InstanceState } from "@/lib/anti-ban";
 // уходили на тот же origin, а не на Next.js dev-сервер.
 const API_BASE =
   process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000";
+
+const STATE_LABELS: Record<InstanceState, string> = {
+  authorized: "Авторизован",
+  yellowCard: "Yellow card",
+  blocked: "Заблокирован",
+  notAuthorized: "Не авторизован",
+  starting: "Запускается",
+  sleepMode: "Сон",
+  unknown: "Неизвестно",
+};
+
+const STATE_DOT_COLORS: Record<InstanceState, string> = {
+  authorized: "bg-green-500",
+  yellowCard: "bg-yellow-500",
+  blocked: "bg-red-500",
+  notAuthorized: "bg-red-500",
+  starting: "bg-blue-500",
+  sleepMode: "bg-blue-500",
+  unknown: "bg-gray-400",
+};
 
 export function HeaderStateBadge() {
   const [state, setState] = useState<InstanceState>("unknown");
@@ -76,7 +101,26 @@ export function HeaderStateBadge() {
     };
   }, []);
 
-  return <StateBadge state={state} />;
+  const label = STATE_LABELS[state] ?? state;
+  const dotColor = STATE_DOT_COLORS[state] ?? STATE_DOT_COLORS.unknown;
+
+  return (
+    <>
+      {/* Компактный dot для узких экранов */}
+      <span
+        role="status"
+        aria-label={`Instance state: ${label}`}
+        title={label}
+        className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-border bg-surface lg:hidden"
+      >
+        <span className={`h-2 w-2 rounded-full ${dotColor}`} aria-hidden="true" />
+      </span>
+      {/* Полный бейдж с текстом — только на ≥lg */}
+      <span className="hidden lg:inline-flex">
+        <StateBadge state={state} />
+      </span>
+    </>
+  );
 }
 
 export default HeaderStateBadge;
