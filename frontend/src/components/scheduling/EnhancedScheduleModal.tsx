@@ -202,8 +202,6 @@ export function EnhancedScheduleModal({
     ]);
   }, [open]);
 
-  if (!open) return null;
-
   const dripWaves = useMemo(() => {
     if (!dripBatch || dripBatch < 1) return 1;
     return Math.ceil((contacts.length || 1) / dripBatch);
@@ -214,6 +212,8 @@ export function EnhancedScheduleModal({
     const totalMinutes = (dripWaves - 1) * Math.max(1, dripInterval);
     return totalMinutes;
   }, [tab, dripWaves, dripInterval]);
+
+  if (!open) return null;
 
   function buildDraft(): ScheduledBroadcastDraft {
     return {
