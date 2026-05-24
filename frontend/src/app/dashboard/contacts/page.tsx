@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import {
+  AlertTriangle,
   BarChart3,
   Check,
   Download,
@@ -10,6 +11,7 @@ import {
   UserCheck,
   X,
 } from "lucide-react";
+import Link from "next/link";
 import { apiGet, apiPost, apiUpload, getFlaskHeaders } from "@/lib/api";
 import { useBulkOperation } from "@/lib/hooks/useBulkOperation";
 import { usePersistedState } from "@/lib/hooks/usePersistedState";
@@ -211,6 +213,33 @@ export default function ContactsPage() {
           Проверка номеров
         </h1>
         <p className="text-text-muted text-sm mt-1">Управление контактами</p>
+      </div>
+
+      {/* Anti-ban warning — лимиты MAX по проверке номеров.
+          Источник: https://max-catalog24.ru/limits.html и наш собственный кейс
+          с баном на 150 проверках. Проверка номеров — самая рискованная
+          операция в MAX, лимит ~20/день для прогретого аккаунта. */}
+      <div className="rounded-2xl border border-warning/30 bg-warning-bg p-4 flex items-start gap-3">
+        <AlertTriangle
+          className="h-5 w-5 mt-0.5 text-warning shrink-0"
+          strokeWidth={2}
+          aria-hidden="true"
+        />
+        <div className="space-y-1.5 text-sm text-warning">
+          <strong className="block">Проверка номеров — самая рискованная операция в MAX</strong>
+          <ul className="text-xs space-y-1 list-disc ml-4 opacity-90">
+            <li>Безопасный дневной лимит — <strong>не более 20 проверок</strong> для прогретого аккаунта</li>
+            <li>Свежие аккаунты (&lt; 7 дней) — только единичные проверки, иначе мгновенный бан</li>
+            <li>Не делайте массовые проверки подряд — чередуйте с другими действиями</li>
+            <li>Если номер не найден в MAX — <strong>не повторяйте запрос</strong> (повторы триггерят бан)</li>
+          </ul>
+          <div className="text-xs pt-1">
+            Состояние аккаунта и осталось проверок:{" "}
+            <Link href="/dashboard/health" className="underline font-medium">
+              /dashboard/health
+            </Link>
+          </div>
+        </div>
       </div>
 
       {/* Check single contact */}

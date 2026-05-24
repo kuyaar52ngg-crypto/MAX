@@ -10,31 +10,19 @@
  * Эта страница помогает оператору организовать прогрев:
  *   - визуальный план на 7 дней с рекомендованными активностями
  *   - текущий прогресс (сколько входящих/исходящих за 24ч/7д)
- *   - готовые тексты «дружественных» сообщений (рандомизация {a|b|c})
  *   - проверка готовности к массовой работе (≥7 дней + ≥5 incoming)
- *   - кнопка «Отправить тестовое сообщение» (вызывает существующий
- *     endpoint /api/send-message)
- *
- * Отличие от Sheiker: у нас не «AI-чат между своими аккаунтами»
- * (это очень палевно — MAX легко детектит бота-к-боту), а **умный
- * план реального двустороннего взаимодействия** + готовые тексты.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
 import {
-  AlertCircle,
   Calendar,
   CheckCircle2,
-  Copy,
   Flame,
   Loader2,
-  Sparkles,
   Target,
-  Users,
 } from "lucide-react";
 import Link from "next/link";
 
-import { apiPost } from "@/lib/api";
 import { useAccountHealth } from "@/lib/hooks/useAccountHealth";
 
 interface WarmUpDay {
@@ -117,7 +105,7 @@ const WARMUP_PLAN: WarmUpDay[] = [
     day: 7,
     title: "Готов к массовой работе",
     goals: [
-      "Открыть `/dashboard/health` — должен показать «Здоров»",
+      "Открыть «Состояние аккаунта» — должен показать «Здоров»",
       "Тестовая рассылка 10–20 сообщениям",
       "Тестовая проверка 10 номеров",
     ],
@@ -126,41 +114,8 @@ const WARMUP_PLAN: WarmUpDay[] = [
   },
 ];
 
-const SAMPLE_MESSAGES: { context: string; text: string }[] = [
-  {
-    context: "Знакомым",
-    text: "{Привет|Здравствуй|Привет, как дела} {!|? }Давно не общались, как у тебя {жизнь|дела|прошёл день}?",
-  },
-  {
-    context: "Поздравление с праздником",
-    text: "{С праздником|Хорошего дня|Поздравляю}! {Пусть всё будет хорошо|Мирного неба|Удачи во всём} 🌸",
-  },
-  {
-    context: "Деловой контакт",
-    text: "Доброго дня! Хотел уточнить — {актуально ли|в силе ли|на повестке ли} наше {предложение|обсуждение|сотрудничество}?",
-  },
-  {
-    context: "Возобновление общения",
-    text: "{Привет|Доброго времени суток}! Вспомнил про тебя — {как поживаешь|как дела|чем занят сейчас}?",
-  },
-];
-
-interface SendTestState {
-  phone: string;
-  loading: boolean;
-  error: string | null;
-  ok: boolean;
-}
-
 export default function WarmupPage() {
   const { primary, loading: healthLoading } = useAccountHealth(60_000);
-  const [sendTest, setSendTest] = useState<SendTestState>({
-    phone: "",
-    loading: false,
-    error: null,
-    ok: false,
-  });
-  const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
 
   const currentDay = useMemo(() => {
     if (!primary) return 1;
@@ -171,52 +126,6 @@ export default function WarmupPage() {
     if (!primary) return false;
     return primary.age_days >= 7 && primary.total_incoming >= 5;
   }, [primary]);
-
-  async function copyText(text: string, idx: number) {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopiedIdx(idx);
-      setTimeout(() => setCopiedIdx(null), 1500);
-    } catch {
-      /* */
-    }
-  }
-
-  async function sendTestMessage() {
-    const phone = sendTest.phone.replace(/\D+/g, "");
-    if (phone.length < 10) {
-      setSendTest((s) => ({ ...s, error: "Введите номер целиком (10+ цифр)" }));
-      return;
-    }
-    setSendTest((s) => ({ ...s, loading: true, error: null, ok: false }));
-    try {
-      // Сначала найдём chatId через /api/check-contact
-      const check = await apiPost<{ exists: boolean; chatId?: string }>(
-        "/api/check-contact",
-        { phone },
-      );
-      if (!check.exists || !check.chatId) {
-        setSendTest((s) => ({
-          ...s,
-          loading: false,
-          error: "Номер не найден в MAX",
-        }));
-        return;
-      }
-      await apiPost("/api/send-message", {
-        chatId: check.chatId,
-        message:
-          "Привет! Это тестовое сообщение для прогрева аккаунта. Игнорируй или ответь как есть 🙂",
-      });
-      setSendTest((s) => ({ ...s, loading: false, ok: true, error: null }));
-    } catch (e: unknown) {
-      setSendTest((s) => ({
-        ...s,
-        loading: false,
-        error: e instanceof Error ? e.message : "Не удалось отправить",
-      }));
-    }
-  }
 
   return (
     <div className="p-6 lg:p-8 max-w-5xl mx-auto space-y-6">
@@ -350,93 +259,6 @@ export default function WarmupPage() {
             );
           })}
         </div>
-      </section>
-
-      {/* Sample messages */}
-      <section className="rounded-2xl border border-border bg-surface p-5 space-y-4">
-        <div>
-          <h2 className="text-base font-semibold text-text inline-flex items-center gap-2">
-            <Sparkles className="h-4 w-4 text-accent" strokeWidth={2} /> Готовые тексты для прогрева
-          </h2>
-          <p className="text-xs text-text-muted mt-1">
-            Рандомизация через <code className="font-mono text-text">{"{a|b|c}"}</code>{" "}
-            — каждый получатель получит свой вариант. Это снижает «спам-paтерн»
-            одинаковых текстов.
-          </p>
-        </div>
-        <div className="space-y-2">
-          {SAMPLE_MESSAGES.map((m, idx) => (
-            <div
-              key={idx}
-              className="rounded-xl border border-border bg-bg-elevated p-3 space-y-2"
-            >
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-xs font-medium text-text-muted inline-flex items-center gap-1">
-                  <Users className="h-3 w-3" strokeWidth={2} /> {m.context}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => copyText(m.text, idx)}
-                  className="inline-flex items-center gap-1 text-xs text-accent hover:underline"
-                >
-                  <Copy className="h-3 w-3" strokeWidth={2.5} />
-                  {copiedIdx === idx ? "Скопировано" : "Копировать"}
-                </button>
-              </div>
-              <pre className="text-sm text-text whitespace-pre-wrap font-mono break-words">
-                {m.text}
-              </pre>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      {/* Send test message */}
-      <section className="rounded-2xl border border-border bg-surface p-5 space-y-3">
-        <h2 className="text-base font-semibold text-text">
-          Отправить тестовое сообщение
-        </h2>
-        <p className="text-xs text-text-muted">
-          Быстрая отправка одного сообщения на свой номер или знакомому.
-          Учитывается в счётчике activity и помогает прогреву.
-        </p>
-        <div className="flex gap-2">
-          <input
-            type="tel"
-            value={sendTest.phone}
-            onChange={(e) =>
-              setSendTest((s) => ({ ...s, phone: e.target.value, ok: false, error: null }))
-            }
-            placeholder="79991234567"
-            className="flex-1 px-3 py-2 bg-bg-elevated border border-border rounded-lg text-sm text-text font-mono focus:outline-none focus:border-accent/50"
-          />
-          <button
-            type="button"
-            onClick={sendTestMessage}
-            disabled={sendTest.loading || sendTest.phone.replace(/\D+/g, "").length < 10}
-            className="inline-flex items-center gap-1.5 px-4 py-2 bg-accent hover:bg-accent-hover text-bg text-sm font-medium rounded-lg disabled:opacity-50 transition-all active:scale-95"
-          >
-            {sendTest.loading ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={2.5} />
-            ) : (
-              <Sparkles className="h-3.5 w-3.5" strokeWidth={2.5} />
-            )}
-            Отправить
-          </button>
-        </div>
-        {sendTest.ok && (
-          <div className="rounded-lg border border-success/30 bg-success-bg px-3 py-2 text-xs text-success inline-flex items-center gap-1.5">
-            <CheckCircle2 className="h-3.5 w-3.5" strokeWidth={2.5} />
-            Сообщение отправлено. Через минуту обнови `/dashboard/health` — счётчики
-            активности обновятся.
-          </div>
-        )}
-        {sendTest.error && (
-          <div className="rounded-lg border border-error/30 bg-error-bg px-3 py-2 text-xs text-error inline-flex items-center gap-1.5">
-            <AlertCircle className="h-3.5 w-3.5" strokeWidth={2.5} />
-            {sendTest.error}
-          </div>
-        )}
       </section>
     </div>
   );
