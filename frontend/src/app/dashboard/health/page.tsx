@@ -12,6 +12,7 @@ import { HeartPulse } from "lucide-react";
 import Link from "next/link";
 
 import { AccountHealthPanel } from "@/components/anti-ban/AccountHealthPanel";
+import { MaxLimitsCard } from "@/components/anti-ban/MaxLimitsCard";
 
 export default function HealthPage() {
   return (
@@ -30,6 +31,8 @@ export default function HealthPage() {
       </header>
 
       <AccountHealthPanel />
+
+      <MaxLimitsCard />
 
       <section className="rounded-2xl border border-border bg-surface p-5 space-y-2">
         <h3 className="text-sm font-semibold text-text">Что делать при бане</h3>

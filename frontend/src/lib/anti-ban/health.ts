@@ -174,6 +174,10 @@ export function computeAccountHealth(input: ComputeHealthInput): AccountHealthDa
   }
 
   // ── Recommended limits — пропорциональны категории ─────────────────
+  // Базируются на документированных лимитах MAX:
+  //   https://max-catalog24.ru/limits.html
+  //   - Проверки номеров: 1-10 единичные / 20 максимум для прогретого
+  //   - Сообщения: 10-20 для свежего → 50 после 7д прогрева → 100 max
   let recCheck: number;
   let recMsg: number;
   switch (status) {
@@ -183,21 +187,21 @@ export function computeAccountHealth(input: ComputeHealthInput): AccountHealthDa
       recMsg = 0;
       break;
     case "fresh":
-      recCheck = 0;
-      recMsg = 10;
+      recCheck = 0; // Свежим аккаунтам — ноль проверок номеров
+      recMsg = 5; // Только личные сообщения для прогрева
       break;
     case "at_risk":
-      recCheck = 30;
-      recMsg = 30;
+      recCheck = 5; // Резко снижаем после инцидента
+      recMsg = 20;
       break;
     case "warming_up":
-      recCheck = 50;
-      recMsg = 50;
+      recCheck = 10;
+      recMsg = 30;
       break;
     case "ok":
     default:
-      recCheck = 300;
-      recMsg = 200;
+      recCheck = 20; // Документированный безопасный лимит MAX
+      recMsg = 50; // 50/день после прогрева
       break;
   }
 

@@ -145,9 +145,21 @@ export default function ContactsPage() {
 
   // Open the PreFlight modal with the currently-staged phones. The actual
   // POST + SSE happens only after the user confirms the modal.
+  //
+  // Дедупликация (важно для anti-ban):
+  // MAX banит за повторные проверки уже-known номеров, особенно для
+  // несуществующих ID — так что отфильтруем все, что есть в massResults
+  // (один в сессии запуск даёт стабильный результат). Если пользователь
+  // хочет реально ре-проверить — сначала очистите результаты кнопкой.
   function openPreflight() {
     if (!massPhones.length || bulkOp.active) return;
-    setPendingPhones(massPhones);
+    const alreadyChecked = new Set(massResults.map((r) => r.phone));
+    const fresh = massPhones.filter((p) => !alreadyChecked.has(p));
+    if (fresh.length === 0) {
+      // Все уже проверены — нечего запускать.
+      return;
+    }
+    setPendingPhones(fresh);
     setPreflightOpen(true);
   }
 
