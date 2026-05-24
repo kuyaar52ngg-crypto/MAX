@@ -55,6 +55,7 @@ import { EnhancedScheduleModal } from "@/components/scheduling";
 import { PreFlightModal } from "@/components/anti-ban/PreFlightModal";
 import { StopButton } from "@/components/anti-ban/StopButton";
 import { CooldownFilterCard } from "@/components/anti-ban/CooldownFilterCard";
+import { SegmentLoader } from "@/components/broadcast/SegmentLoader";
 import { useBulkOperation } from "@/lib/hooks/useBulkOperation";
 import { usePersistedState } from "@/lib/hooks/usePersistedState";
 import {
@@ -442,6 +443,38 @@ export default function BroadcastPage() {
     setProgress(null);
     seenRecipientsRef.current = new Set();
 
+    // Anti-ban: blacklist filter перед запуском.
+    // Pre-broadcast вызов /api/contact-blacklist/filter — мягкая защита от
+    // случайной отправки в номера, которые пользователь явно занёс в
+    // blacklist. Если что-то найдено — удаляем из контактов с явным
+    // предупреждением и продолжаем с очищенным списком.
+    let workingContacts = contacts;
+    try {
+      const blFilter = await nxPost<{ allowed: string[]; blocked: string[] }>(
+        "/api/contact-blacklist/filter",
+        { phones: contacts.map((c) => c.phone) },
+      );
+      if (blFilter.blocked && blFilter.blocked.length > 0) {
+        const blockedSet = new Set(blFilter.blocked);
+        workingContacts = contacts.filter((c) => !blockedSet.has(c.phone));
+        // Обновим стейт чтобы пользователь видел отфильтрованный список.
+        setContacts(workingContacts);
+        setUploadError(
+          `Из списка автоматически убрано ${blFilter.blocked.length} ${
+            blFilter.blocked.length === 1
+              ? "номер из blacklist"
+              : "номеров из blacklist"
+          }. Чтобы их отправить, удалите из blacklist в /dashboard/segments.`,
+        );
+        if (workingContacts.length === 0) {
+          return;
+        }
+      }
+    } catch {
+      // Network fail на blacklist-фильтре — это не критично, продолжаем
+      // как есть. Безопасность здесь best-effort, а не hard-gate.
+    }
+
     try {
       const file = attachment.kind === "selected" ? attachment.file : null;
 
@@ -449,7 +482,7 @@ export default function BroadcastPage() {
       // expects on the server (each contact carries an optional `_message`).
       const hasPersonalized = Object.keys(personalizedMessages).length > 0;
       const contactsToSend = hasPersonalized
-        ? contacts.map((c) => {
+        ? workingContacts.map((c) => {
             const personal = personalizedMessages[c.phone];
             return personal ? { ...c, _message: personal } : c;
           })
@@ -459,7 +492,7 @@ export default function BroadcastPage() {
       //    обновлять `Recipient` по мере поступления SSE-событий.
       const broadcast = await nxPost<{ id: number }>("/api/broadcasts", {
         message: message.trim(),
-        total: contacts.length,
+        total: workingContacts.length,
         file_url: null,
         file_name: file ? file.name : null,
         use_typing: useTyping,
@@ -484,7 +517,7 @@ export default function BroadcastPage() {
       setPendingBroadcast({
         formData: fd,
         broadcastId: broadcast.id,
-        total: contacts.length,
+        total: workingContacts.length,
       });
       setPreflightOpen(true);
     } catch (err: unknown) {
@@ -656,6 +689,24 @@ export default function BroadcastPage() {
             onRemove={handleRemovePhone}
             onCsvUpload={handleCsvUpload}
             csvWarnings={csvWarnings}
+          />
+          <SegmentLoader
+            currentPhones={contacts.map((c) => c.phone)}
+            onLoad={(members) => {
+              if (members.length === 0) return;
+              setContacts((prev) => {
+                const map = new Map(prev.map((c) => [c.phone, c]));
+                for (const m of members) {
+                  if (!map.has(m.phone)) {
+                    const entry: BroadcastContact = { phone: m.phone };
+                    if (m.name) entry.name = m.name;
+                    map.set(m.phone, entry);
+                  }
+                }
+                return Array.from(map.values());
+              });
+              clearPersonalizedIfAny();
+            }}
           />
           <CooldownFilterCard
             phones={contacts.map((c) => c.phone)}
