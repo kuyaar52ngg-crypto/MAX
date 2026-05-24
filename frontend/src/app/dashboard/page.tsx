@@ -35,6 +35,7 @@ import {
 import { nxGet } from "@/lib/api";
 import { useAccountHealth } from "@/lib/hooks/useAccountHealth";
 import type { AccountHealthData, AccountHealthStatus } from "@/lib/anti-ban/health";
+import { OnboardingChecklist } from "@/components/dashboard/OnboardingChecklist";
 
 interface ActiveRun {
   id: number;
@@ -80,6 +81,7 @@ interface DashboardOverview {
     status: string;
     success_rate: number;
   }[];
+  has_ever_broadcast: boolean;
 }
 
 const HEALTH_TONE: Record<AccountHealthStatus, { card: string; text: string; icon: typeof ShieldCheck }> = {
@@ -152,6 +154,13 @@ export default function DashboardPage() {
 
       {/* Health strip — самое важное на самом верху */}
       <HealthStrip health={health} loading={healthLoading} />
+
+      {/* Onboarding checklist — auto-hides when complete */}
+      <OnboardingChecklist
+        health={health}
+        broadcastsStarted24h={overview?.stats_24h.broadcasts_started ?? 0}
+        hasEverBroadcast={overview?.has_ever_broadcast ?? false}
+      />
 
       {/* Stats 24h */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">

@@ -16,6 +16,13 @@
  */
 
 import type { AIGenerateResponse } from "@/components/broadcast/types";
+import {
+  buildMarketerSystemPrompt,
+  buildRandomizeSystemPrompt,
+  buildVariantsSystemPrompt,
+  parseVariantsResponse,
+  type AiTone,
+} from "./marketer-prompt";
 
 export async function requestAiText(
   prompt: string,
@@ -40,4 +47,56 @@ export async function requestAiText(
 
   const data = (await res.json()) as AIGenerateResponse;
   return data.text || "";
+}
+
+/**
+ * Generate a marketing message from scratch with optional tone preset.
+ */
+export async function generateMessage(
+  brief: string,
+  tone: AiTone | undefined,
+  signal?: AbortSignal,
+): Promise<string> {
+  const system = buildMarketerSystemPrompt(brief || "", tone);
+  return requestAiText(
+    brief.trim() || "Сгенерируй маркетинговое сообщение для рассылки.",
+    signal,
+    system,
+  );
+}
+
+/**
+ * Wrap an existing user message into {a|b|c} placeholders to reduce the
+ * spam-pattern signal of identical texts. Pure transformation: takes the
+ * original text and returns an enriched version.
+ */
+export async function randomizeMessage(
+  text: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    throw new Error("Пустой текст — нечего уникализировать");
+  }
+  const system = buildRandomizeSystemPrompt(trimmed);
+  return requestAiText(trimmed, signal, system);
+}
+
+/**
+ * Generate N distinct variants of one core idea for A/B testing.
+ */
+export async function generateVariants(
+  brief: string,
+  count: number,
+  tone: AiTone | undefined,
+  signal?: AbortSignal,
+): Promise<string[]> {
+  const trimmed = brief.trim();
+  const system = buildVariantsSystemPrompt(trimmed || "", count, tone);
+  const raw = await requestAiText(
+    trimmed || "Сгенерируй варианты маркетингового сообщения.",
+    signal,
+    system,
+  );
+  return parseVariantsResponse(raw);
 }

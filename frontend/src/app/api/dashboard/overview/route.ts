@@ -61,6 +61,8 @@ export interface DashboardOverview {
     status: string;
     success_rate: number;
   }[];
+  /** Был ли когда-либо у пользователя broadcast — для onboarding gate. */
+  has_ever_broadcast: boolean;
 }
 
 export async function GET(_req: NextRequest) {
@@ -84,6 +86,7 @@ export async function GET(_req: NextRequest) {
       incomingLast24h,
       incidentsLast24h,
       lastBroadcasts,
+      totalBroadcastsCount,
     ] = await prismaRetry(() =>
       Promise.all([
         prisma.operationRun.findMany({
@@ -143,6 +146,9 @@ export async function GET(_req: NextRequest) {
           orderBy: { id: "desc" },
           take: 3,
         }),
+        prisma.broadcast.count({
+          where: { user_id: user.id },
+        }),
       ]),
     );
 
@@ -201,6 +207,7 @@ export async function GET(_req: NextRequest) {
           success_rate: successRate,
         };
       }),
+      has_ever_broadcast: totalBroadcastsCount > 0,
     };
 
     return jsonResponse(response);

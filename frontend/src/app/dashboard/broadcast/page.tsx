@@ -300,7 +300,10 @@ export default function BroadcastPage() {
     return lines.join("\n");
   }
 
-  async function handleAiClick() {
+  async function handleAiClick(
+    mode: import("@/components/broadcast/AIGeneratorButton").AiGenerateMode = "generate",
+    tone?: import("@/lib/ai/marketer-prompt").AiTone,
+  ) {
     // Abort any in-flight request — only one AI session at a time.
     if (aiAbortRef.current) {
       aiAbortRef.current.abort();
@@ -312,19 +315,60 @@ export default function BroadcastPage() {
     setAiError(null);
 
     try {
-      // Branch A — no recipients yet: keep the original behaviour and just
-      // generate a single shared text into the textarea.
+      // Mode: randomize — обернуть существующий текст в {a|b|c}.
+      if (mode === "randomize") {
+        if (!message.trim()) {
+          setAiError("Сначала напишите свой текст для уникализации");
+          return;
+        }
+        const { randomizeMessage } = await import("@/lib/ai/client");
+        const wrapped = await randomizeMessage(message, ctrl.signal);
+        if (ctrl.signal.aborted) return;
+        if (wrapped) {
+          setMessage(wrapped);
+          setPersonalizedMessages({}); // на текстах с {a|b|c} per-recipient не нужен
+        }
+        return;
+      }
+
+      // Mode: variants — 3 разных варианта одной идеи.
+      if (mode === "variants") {
+        const { generateVariants } = await import("@/lib/ai/client");
+        const variants = await generateVariants(
+          message,
+          3,
+          tone,
+          ctrl.signal,
+        );
+        if (ctrl.signal.aborted) return;
+        if (variants.length === 0) {
+          setAiError("Не удалось сгенерировать варианты");
+          return;
+        }
+        // Объединяем варианты в один текст с {a|b|c}-обёрткой.
+        // Если получили 1 вариант — просто кладём его. Если 2+ — оборачиваем.
+        if (variants.length === 1) {
+          setMessage(variants[0]);
+        } else {
+          setMessage(`{${variants.map((v) => v.replace(/[{}|]/g, " ")).join("|")}}`);
+        }
+        setPersonalizedMessages({});
+        return;
+      }
+
+      // Mode: generate (default) — генерация с нуля по brief.
+      const { generateMessage } = await import("@/lib/ai/client");
+
+      // Branch A — no recipients yet: один общий текст в textarea.
       if (contacts.length === 0) {
-        const text = await requestAiText(message, ctrl.signal);
+        const text = await generateMessage(message, tone, ctrl.signal);
         setMessage(text);
         setPersonalizedMessages({});
         return;
       }
 
-      // Branch B — recipients present: generate one unique message PER
-      // recipient in parallel, store the map, and surface the first one in
-      // the textarea so the user has something to tweak if they want.
-      const systemPrompt = buildMarketerSystemPrompt(message);
+      // Branch B — recipients present: per-recipient текст параллельно.
+      const systemPrompt = buildMarketerSystemPrompt(message, tone);
       const settled = await Promise.allSettled(
         contacts.map((contact, index) =>
           requestAiText(
@@ -335,7 +379,6 @@ export default function BroadcastPage() {
         ),
       );
 
-      // If the user aborted, bail without touching state.
       if (ctrl.signal.aborted) return;
 
       const map: Record<string, string> = {};
@@ -359,9 +402,6 @@ export default function BroadcastPage() {
       }
 
       setPersonalizedMessages(map);
-      // Mirror the first generated text into the textarea as the visible
-      // example. Manual edits will reset `personalizedMessages` via
-      // `handleMessageChange`, so the user opt-out is one keystroke away.
       const firstPhone = contacts.find((c) => map[c.phone])?.phone;
       if (firstPhone) {
         setMessage(map[firstPhone]);
@@ -381,7 +421,6 @@ export default function BroadcastPage() {
             ? err.message
             : "Не удалось сгенерировать текст";
         setAiError(messageText);
-        // Requirement 4.8: do NOT change `message` on failure.
       }
     } finally {
       setAiPending(false);

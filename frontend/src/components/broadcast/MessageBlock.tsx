@@ -69,7 +69,14 @@ export interface MessageBlockProps {
   uploadError: string | null;
 
   /** AI generator state and click handler. */
-  ai: { pending: boolean; error: string | null; onClick(): void };
+  ai: {
+    pending: boolean;
+    error: string | null;
+    onClick(
+      mode?: import("./AIGeneratorButton").AiGenerateMode,
+      tone?: import("@/lib/ai/marketer-prompt").AiTone,
+    ): void;
+  };
 
   /** Available templates. When empty, the template selector is hidden. */
   templates: Template[];
@@ -174,7 +181,11 @@ export function MessageBlock({
         />
 
         <div className="flex flex-wrap items-center gap-3">
-          <AIGeneratorButton pending={ai.pending} onClick={ai.onClick} />
+          <AIGeneratorButton
+            pending={ai.pending}
+            onClick={(mode, tone) => ai.onClick(mode, tone)}
+            hasText={message.trim().length > 0}
+          />
           {ai.error && (
             <p
               role="alert"

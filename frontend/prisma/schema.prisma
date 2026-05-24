@@ -441,3 +441,51 @@ model NotificationPreference {
   @@index([user_id])
   @@map("notification_preferences")
 }
+
+// ============================================================================
+// Contact CRM-mini: segments + blacklist
+// ============================================================================
+
+model ContactSegment {
+  id          BigInt   @id @default(autoincrement())
+  user_id     String   @db.Uuid
+  name        String
+  color       String   @default("#6b7280")
+  description String?
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  members ContactSegmentMember[]
+
+  @@unique([user_id, name])
+  @@index([user_id])
+  @@map("contact_segments")
+}
+
+model ContactSegmentMember {
+  id         BigInt   @id @default(autoincrement())
+  segment_id BigInt
+  phone      String
+  name       String?
+  notes      String?
+  added_at   DateTime @default(now())
+
+  segment ContactSegment @relation(fields: [segment_id], references: [id], onDelete: Cascade)
+
+  @@unique([segment_id, phone])
+  @@index([segment_id])
+  @@index([phone])
+  @@map("contact_segment_members")
+}
+
+model ContactBlacklist {
+  id         BigInt   @id @default(autoincrement())
+  user_id    String   @db.Uuid
+  phone      String
+  reason     String?
+  created_at DateTime @default(now())
+
+  @@unique([user_id, phone])
+  @@index([user_id])
+  @@map("contact_blacklist")
+}

@@ -291,6 +291,13 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                     Прогрев аккаунта
                   </Link>
                   <Link
+                    href="/dashboard/segments"
+                    className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-text-secondary transition-colors hover:bg-surface-hover hover:text-text"
+                  >
+                    <UserCheck className="h-4 w-4" strokeWidth={2} />
+                    Сегменты и blacklist
+                  </Link>
+                  <Link
                     href="/dashboard/settings"
                     className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-text-secondary transition-colors hover:bg-surface-hover hover:text-text"
                   >
