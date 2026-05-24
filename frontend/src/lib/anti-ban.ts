@@ -34,19 +34,29 @@ export interface AntiBanConfig {
   warn_on_zero_response_ratio: boolean;
 }
 
+/**
+ * Conservative defaults — пересмотрены после реального бана MAX-аккаунта
+ * на 150 проверках с предыдущими, более агрессивными настройками.
+ *
+ * Старые значения (привели к бану):
+ *   delay_min=3, delay_max=7, hourly=200, daily=1000, long_pause_every_n=50
+ *
+ * Новые: примерно вдвое медленнее, лимиты вниз. 150 номеров теперь идут
+ * 25–35 минут с двумя long-pause посередине — это паттерн живого пользователя.
+ */
 export const DEFAULT_ANTI_BAN_CONFIG: AntiBanConfig = {
-  delay_min: 3.0,
-  delay_max: 7.0,
-  batch_size: 50,
-  long_pause_every_n: 50,
-  long_pause_seconds: 60.0,
-  daily_check_limit: 1000,
-  hourly_check_limit: 200,
-  daily_message_limit: 500,
-  broadcast_delay_min: 5.0,
-  broadcast_jitter_max: 3.0,
+  delay_min: 6.0,
+  delay_max: 12.0,
+  batch_size: 30,
+  long_pause_every_n: 25,
+  long_pause_seconds: 120.0,
+  daily_check_limit: 300,
+  hourly_check_limit: 80,
+  daily_message_limit: 200,
+  broadcast_delay_min: 8.0,
+  broadcast_jitter_max: 5.0,
   state_poll_interval_seconds: 30,
-  watchdog_timeout_seconds: 120,
+  watchdog_timeout_seconds: 180,
   watchdog_check_interval_seconds: 10,
   cancel_check_interval_seconds: 1.0,
   sse_client_timeout_seconds: 60,
@@ -57,8 +67,30 @@ export const DEFAULT_ANTI_BAN_CONFIG: AntiBanConfig = {
   incident_history_limit: 100,
   backoff_base_seconds: 5.0,
   response_ratio_window_hours: 24,
-  response_ratio_min_outgoing: 50,
+  response_ratio_min_outgoing: 30,
   warn_on_zero_response_ratio: true,
+};
+
+/**
+ * Ультра-консервативный preset для свежих или восстанавливающихся
+ * аккаунтов. Применяй после yellowCard/blocked инцидентов или для
+ * аккаунтов младше 7 дней.
+ *
+ * 150 номеров с этими настройками идут ~50–60 минут — это безопасно
+ * даже для совсем свежих аккаунтов MAX.
+ */
+export const SAFE_ANTI_BAN_CONFIG: AntiBanConfig = {
+  ...DEFAULT_ANTI_BAN_CONFIG,
+  delay_min: 12.0,
+  delay_max: 25.0,
+  batch_size: 20,
+  long_pause_every_n: 15,
+  long_pause_seconds: 180.0,
+  daily_check_limit: 100,
+  hourly_check_limit: 30,
+  daily_message_limit: 80,
+  broadcast_delay_min: 15.0,
+  broadcast_jitter_max: 10.0,
 };
 
 /**
@@ -79,13 +111,13 @@ export function computeEta(config: AntiBanConfig, total: number): number {
 }
 
 /**
- * Map total count to risk category (Requirement 6.3).
- *   low    if total < 200
- *   medium if 200 <= total < 1000
- *   high   if total >= 1000
+ * Map total count to risk category. Пересмотрено после real-world бана.
+ *   low    < 50
+ *   medium 50..150
+ *   high   > 150
  */
 export function computeRisk(total: number): "low" | "medium" | "high" {
-  if (total < 200) return "low";
-  if (total < 1000) return "medium";
+  if (total < 50) return "low";
+  if (total < 150) return "medium";
   return "high";
 }

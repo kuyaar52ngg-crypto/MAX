@@ -45,7 +45,7 @@ scratch/
 fix_html.py
 build_exe.bat
 qr_code.html
-Number.csv
+*.csv
 
 # Local-only files
 ТЗ.md

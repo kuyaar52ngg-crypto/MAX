@@ -107,18 +107,23 @@ export function HeaderStateBadge() {
   return (
     <>
       {/* Компактный dot для узких экранов */}
-      <span
+      <a
         role="status"
         aria-label={`Instance state: ${label}`}
-        title={label}
-        className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-border bg-surface lg:hidden"
+        title={`${label} · открыть состояние аккаунта`}
+        href="/dashboard/health"
+        className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-border bg-surface lg:hidden hover:border-accent/40 transition-colors"
       >
         <span className={`h-2 w-2 rounded-full ${dotColor}`} aria-hidden="true" />
-      </span>
+      </a>
       {/* Полный бейдж с текстом — только на ≥lg */}
-      <span className="hidden lg:inline-flex">
+      <a
+        href="/dashboard/health"
+        title="Открыть состояние аккаунта"
+        className="hidden lg:inline-flex"
+      >
         <StateBadge state={state} />
-      </span>
+      </a>
     </>
   );
 }

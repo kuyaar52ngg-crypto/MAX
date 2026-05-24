@@ -9,6 +9,7 @@ import {
   ChevronDown,
   ClipboardList,
   FileText,
+  HeartPulse,
   LogOut,
   Megaphone,
   MessageCircle,
@@ -273,6 +274,13 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                   >
                     <UserCircle className="h-4 w-4" strokeWidth={2} />
                     Личный кабинет
+                  </Link>
+                  <Link
+                    href="/dashboard/health"
+                    className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-text-secondary transition-colors hover:bg-surface-hover hover:text-text"
+                  >
+                    <HeartPulse className="h-4 w-4" strokeWidth={2} />
+                    Состояние аккаунта
                   </Link>
                   <Link
                     href="/dashboard/settings"
