@@ -98,7 +98,7 @@ export async function GET(_req: NextRequest) {
       totalIncoming,
       incomingLast7d,
       outgoingLast7d,
-      checksLast24h,
+      checkRunsLast24h,
       broadcastsLast24h,
       incidentsLast24h,
       lastBadIncidentRow,
@@ -116,12 +116,13 @@ export async function GET(_req: NextRequest) {
             sent_at: { gte: since7d },
           },
         }),
-        prisma.operationRun.count({
+        prisma.operationRun.findMany({
           where: {
             user_id: user.id,
             kind: "check",
             started_at: { gte: since24h },
           },
+          select: { processed: true },
         }),
         prisma.operationRun.count({
           where: {
@@ -146,6 +147,13 @@ export async function GET(_req: NextRequest) {
           select: { created_at: true },
         }),
       ]),
+    );
+
+    // Суммируем processed по всем check-runs за сутки — реальное число
+    // проверенных номеров, а не количество запущенных операций.
+    const checksLast24h = checkRunsLast24h.reduce(
+      (sum, r) => sum + (r.processed ?? 0),
+      0,
     );
 
     const lastBadIncidentAt = lastBadIncidentRow?.created_at ?? null;

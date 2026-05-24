@@ -9,6 +9,7 @@ import {
   ChevronDown,
   ClipboardList,
   FileText,
+  Flame,
   HeartPulse,
   LogOut,
   Megaphone,
@@ -281,6 +282,20 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                   >
                     <HeartPulse className="h-4 w-4" strokeWidth={2} />
                     Состояние аккаунта
+                  </Link>
+                  <Link
+                    href="/dashboard/warmup"
+                    className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-text-secondary transition-colors hover:bg-surface-hover hover:text-text"
+                  >
+                    <Flame className="h-4 w-4" strokeWidth={2} />
+                    Прогрев аккаунта
+                  </Link>
+                  <Link
+                    href="/dashboard/converter"
+                    className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-text-secondary transition-colors hover:bg-surface-hover hover:text-text"
+                  >
+                    <UserCheck className="h-4 w-4" strokeWidth={2} />
+                    Конвертер номеров
                   </Link>
                   <Link
                     href="/dashboard/settings"

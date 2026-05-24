@@ -58,6 +58,10 @@ export interface AccountHealthData {
   recommended_daily_check_limit: number;
   /** Рекомендованный дневной лимит рассылок. */
   recommended_daily_message_limit: number;
+  /** Осталось проверок номеров до лимита (макс 0). */
+  remaining_check_quota: number;
+  /** Осталось сообщений-в-сутки до лимита (приближённо — recMsg - avg/day за 7д). */
+  remaining_message_quota: number;
 }
 
 interface ComputeHealthInput {
@@ -223,6 +227,10 @@ export function computeAccountHealth(input: ComputeHealthInput): AccountHealthDa
     blocked_until: blockedUntil,
     recommended_daily_check_limit: recCheck,
     recommended_daily_message_limit: recMsg,
+    /** Сколько проверок осталось до достижения рекомендованного лимита. */
+    remaining_check_quota: Math.max(0, recCheck - input.checksLast24h),
+    /** Сколько рассылок-операций осталось (broadcasts_last_24h — операции, не сообщения). */
+    remaining_message_quota: Math.max(0, recMsg - input.outgoingLast7d / 7),
   };
 }
 

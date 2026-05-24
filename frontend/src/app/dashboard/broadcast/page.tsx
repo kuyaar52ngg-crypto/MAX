@@ -54,6 +54,7 @@ import {
 import { EnhancedScheduleModal } from "@/components/scheduling";
 import { PreFlightModal } from "@/components/anti-ban/PreFlightModal";
 import { StopButton } from "@/components/anti-ban/StopButton";
+import { CooldownFilterCard } from "@/components/anti-ban/CooldownFilterCard";
 import { useBulkOperation } from "@/lib/hooks/useBulkOperation";
 import { usePersistedState } from "@/lib/hooks/usePersistedState";
 import {
@@ -616,6 +617,16 @@ export default function BroadcastPage() {
             onRemove={handleRemovePhone}
             onCsvUpload={handleCsvUpload}
             csvWarnings={csvWarnings}
+          />
+          <CooldownFilterCard
+            phones={contacts.map((c) => c.phone)}
+            onRemoveCooldown={(cooldownPhones) => {
+              const cooldownSet = new Set(cooldownPhones);
+              setContacts((prev) =>
+                prev.filter((c) => !cooldownSet.has(c.phone)),
+              );
+              clearPersonalizedIfAny();
+            }}
           />
           <SettingsBlock
             delay={delay}

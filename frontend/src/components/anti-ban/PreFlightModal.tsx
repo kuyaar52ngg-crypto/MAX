@@ -242,6 +242,15 @@ export function PreFlightModal({
             />
           </div>
 
+          {/* ── Daily quota counter ──────────────────────────────────────── */}
+          {health && (
+            <DailyQuotaCounter
+              kind={kind}
+              total={total}
+              health={health}
+            />
+          )}
+
           {/* ── Warning: превышение recommended limit ────────────────────── */}
           {overLimit && health !== null && (
             <div className="rounded-xl border border-warning/30 bg-warning-bg px-4 py-3 text-sm text-warning flex gap-2">
@@ -430,6 +439,90 @@ function Metric({ label, value }: { label: string; value: string | number }) {
         {label}
       </div>
       <div className="font-mono mt-0.5">{value}</div>
+    </div>
+  );
+}
+
+/**
+ * `DailyQuotaCounter` — визуализирует, сколько проверок/сообщений уже
+ * сделано сегодня и сколько осталось до рекомендованного дневного лимита.
+ *
+ * Цвет шкалы:
+ *   - зелёный, если planned <= remaining
+ *   - жёлтый, если planned частично укладывается
+ *   - красный, если planned выходит за дневной лимит
+ */
+function DailyQuotaCounter({
+  kind,
+  total,
+  health,
+}: {
+  kind: "check" | "broadcast";
+  total: number;
+  health: AccountHealthData;
+}) {
+  const used =
+    kind === "check" ? health.checks_last_24h : health.broadcasts_last_24h;
+  const limit =
+    kind === "check"
+      ? health.recommended_daily_check_limit
+      : health.recommended_daily_message_limit;
+  const remaining = Math.max(0, limit - used);
+  const exceeds = total > remaining;
+  const usedPct = limit > 0 ? Math.min(100, (used / limit) * 100) : 100;
+  const plannedPct = limit > 0 ? Math.min(100 - usedPct, (total / limit) * 100) : 0;
+  const tone = exceeds ? "error" : remaining < limit / 4 ? "warning" : "info";
+
+  const toneClass = {
+    info: "border-accent/30",
+    warning: "border-warning/40",
+    error: "border-error/40",
+  }[tone];
+  const usedColor = {
+    info: "bg-accent/60",
+    warning: "bg-warning/70",
+    error: "bg-error/70",
+  }[tone];
+  const plannedColor = exceeds ? "bg-error/40" : "bg-accent/30";
+
+  const label =
+    kind === "check"
+      ? "Проверки номеров за 24 часа"
+      : "Рассылки за 24 часа";
+  return (
+    <div className={`rounded-xl border ${toneClass} bg-bg-elevated px-4 py-3 space-y-2`}>
+      <div className="flex items-baseline justify-between text-xs">
+        <span className="font-medium text-text">{label}</span>
+        <span className="text-text-muted font-mono">
+          {used} / {limit}
+          {limit > 0 && ` · осталось ${remaining}`}
+        </span>
+      </div>
+      <div className="relative h-2 rounded-full bg-bg overflow-hidden">
+        <div
+          className={`h-full ${usedColor}`}
+          style={{ width: `${usedPct}%` }}
+        />
+        <div
+          className={`h-full ${plannedColor} absolute top-0`}
+          style={{
+            width: `${plannedPct}%`,
+            left: `${usedPct}%`,
+          }}
+        />
+      </div>
+      {exceeds && limit > 0 && (
+        <div className="text-xs text-error">
+          Запуск превышает дневной лимит на {total - remaining}{" "}
+          {kind === "check" ? "проверок" : "рассылок"}. Запустите завтра или
+          разбейте на части.
+        </div>
+      )}
+      {!exceeds && remaining < limit / 4 && limit > 0 && (
+        <div className="text-xs text-warning">
+          Дневной лимит почти исчерпан. После запуска останется {remaining - total}.
+        </div>
+      )}
     </div>
   );
 }
