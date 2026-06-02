@@ -10,6 +10,7 @@ import {
   MessageSquare,
   Mic,
   Paperclip,
+  Plus,
   RotateCw,
   Search,
   Send,
@@ -17,6 +18,7 @@ import {
   User,
   Users,
 } from "lucide-react";
+import { CreateGroupModal } from "@/components/CreateGroupModal";
 import { apiGet, apiPost, apiUpload, nxPost } from "@/lib/api";
 import { Chat, ChatMessage } from "@/lib/types";
 import { GroupSettingsPanel } from "@/components/GroupSettingsPanel";
@@ -65,6 +67,7 @@ export default function MessengerPage() {
   const [contactName, setContactName] = useState("");
   const [contactPhone, setContactPhone] = useState("");
   const [showInfo, setShowInfo] = useState(false);
+  const [showCreateGroup, setShowCreateGroup] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -370,6 +373,18 @@ export default function MessengerPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  async function handleGroupCreated(groupId: string, _groupName: string) {
+    await loadChats();
+    setChats((prev) => {
+      const found = prev.find(
+        (c) => c.chatId === groupId || c.chatId === `${groupId}@g.us`,
+      );
+      if (found) openChat(found);
+      return prev;
+    });
+    setShowCreateGroup(false);
+  }
+
   return (
     <div className="flex h-[calc(100vh-88px)] overflow-hidden px-5 pb-6 lg:px-8">
       {/* Toasts */}
@@ -403,14 +418,24 @@ export default function MessengerPage() {
             <MessageCircle className="h-4 w-4" strokeWidth={2} aria-hidden="true" />
             Чаты
           </h2>
-          <button
-            onClick={() => loadChats()}
-            className="p-1.5 rounded-lg hover:bg-surface-hover transition-colors text-text-muted hover:text-accent"
-            title="Обновить список"
-            aria-label="Обновить список чатов"
-          >
-            <RotateCw className="h-4 w-4" strokeWidth={2} aria-hidden="true" />
-          </button>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => setShowCreateGroup(true)}
+              className="p-1.5 rounded-lg hover:bg-surface-hover transition-colors text-text-muted hover:text-accent"
+              title="Создать группу"
+              aria-label="Создать группу"
+            >
+              <Plus className="h-4 w-4" strokeWidth={2} aria-hidden="true" />
+            </button>
+            <button
+              onClick={() => loadChats()}
+              className="p-1.5 rounded-lg hover:bg-surface-hover transition-colors text-text-muted hover:text-accent"
+              title="Обновить список"
+              aria-label="Обновить список чатов"
+            >
+              <RotateCw className="h-4 w-4" strokeWidth={2} aria-hidden="true" />
+            </button>
+          </div>
         </div>
 
         {/* Search */}
@@ -878,6 +903,11 @@ export default function MessengerPage() {
           </div>
         )}
       </div>
+      <CreateGroupModal
+        open={showCreateGroup}
+        onClose={() => setShowCreateGroup(false)}
+        onCreated={handleGroupCreated}
+      />
     </div>
   );
 }
