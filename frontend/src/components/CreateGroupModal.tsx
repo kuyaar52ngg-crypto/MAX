@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Loader2, Plus, X } from "lucide-react";
+import { Loader2, Plus, Users, X } from "lucide-react";
 import { apiPost } from "@/lib/api";
 import { PhoneCollector } from "./PhoneCollector";
 
@@ -70,27 +70,29 @@ export function CreateGroupModal({
   }
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center">
-      <div className="absolute inset-0 bg-black/50" onClick={handleClose} />
-      <div className="relative z-10 w-full max-w-md bg-surface border border-border rounded-2xl shadow-2xl flex flex-col max-h-[90vh]">
-        <div className="flex items-center justify-between px-5 py-3 border-b border-border">
-          <h3 className="text-sm font-bold text-text flex items-center gap-2">
-            <Plus className="h-4 w-4" strokeWidth={2} />
-            Новая группа
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={handleClose} />
+      <div className="relative z-10 w-full max-w-2xl bg-surface border border-border rounded-2xl shadow-2xl flex flex-col max-h-[85vh]">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-border bg-gradient-to-r from-accent/5 to-transparent">
+          <h3 className="text-base font-bold text-text flex items-center gap-2.5">
+            <div className="p-2 rounded-lg bg-accent/10">
+              <Plus className="h-5 w-5 text-accent" strokeWidth={2} />
+            </div>
+            Создание новой группы
           </h3>
           <button
             type="button"
             onClick={handleClose}
-            className="p-1.5 rounded-lg text-text-muted hover:text-text hover:bg-surface-hover transition-colors"
+            className="p-2 rounded-lg text-text-muted hover:text-text hover:bg-surface-hover transition-colors"
           >
-            <X className="h-4 w-4" strokeWidth={2} />
+            <X className="h-5 w-5" strokeWidth={2} />
           </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-5 space-y-4">
+        <div className="flex-1 overflow-y-auto p-6 space-y-5">
           <div>
-            <label className="block text-[10px] font-bold text-text-muted uppercase tracking-widest mb-1.5">
-              Название группы *
+            <label className="block text-xs font-semibold text-text mb-2">
+              Название группы <span className="text-error">*</span>
             </label>
             <input
               type="text"
@@ -98,22 +100,22 @@ export function CreateGroupModal({
               onChange={(e) => setName(e.target.value)}
               placeholder="Например: Клиенты Москва"
               maxLength={100}
-              className="w-full px-3 py-2 bg-bg-elevated border border-border rounded-lg text-sm text-text placeholder:text-text-muted focus:outline-none focus:border-border-focus focus:ring-1 focus:ring-accent-light/25"
+              className="w-full px-4 py-2.5 bg-bg-elevated border border-border rounded-xl text-sm text-text placeholder:text-text-muted focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 transition-all"
             />
           </div>
 
           <PhoneCollector phones={phones} onPhonesChange={setPhones} />
 
           <div>
-            <label className="block text-[10px] font-bold text-text-muted uppercase tracking-widest mb-1.5">
-              Приветственное сообщение
+            <label className="block text-xs font-semibold text-text mb-2">
+              Приветственное сообщение <span className="text-text-muted text-[11px] font-normal">(опционально)</span>
             </label>
             <textarea
               value={message}
               onChange={(e) => setMessage(e.target.value)}
-              placeholder="Опционально: сообщение при создании группы"
-              rows={2}
-              className="w-full px-3 py-2 bg-bg-elevated border border-border rounded-lg text-sm text-text placeholder:text-text-muted focus:outline-none focus:border-border-focus focus:ring-1 focus:ring-accent-light/25 resize-none"
+              placeholder="Сообщение, которое будет отправлено участникам при добавлении в группу"
+              rows={3}
+              className="w-full px-4 py-2.5 bg-bg-elevated border border-border rounded-xl text-sm text-text placeholder:text-text-muted focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 transition-all resize-none"
             />
           </div>
 
@@ -136,32 +138,42 @@ export function CreateGroupModal({
           )}
         </div>
 
-        <div className="px-5 py-3 border-t border-border flex justify-end gap-2">
-          <button
-            type="button"
-            onClick={handleClose}
-            className="px-4 py-2 text-xs text-text-muted hover:text-text transition-colors"
-          >
-            {result ? "Закрыть" : "Отмена"}
-          </button>
-          <button
-            type="button"
-            onClick={handleCreate}
-            disabled={creating || !name.trim()}
-            className="px-4 py-2 bg-accent hover:bg-accent-hover text-bg text-xs font-bold rounded-lg disabled:opacity-50 flex items-center gap-1.5"
-          >
-            {creating ? (
-              <>
-                <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={2} />
-                Создание...
-              </>
-            ) : (
-              <>
-                <Plus className="h-3.5 w-3.5" strokeWidth={2} />
-                Создать группу
-              </>
+        <div className="px-6 py-4 border-t border-border flex items-center justify-between bg-bg-elevated/50">
+          <div className="text-xs text-text-muted">
+            {phones.length > 0 && (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-accent/10 text-accent rounded-lg font-medium">
+                <Users className="h-3.5 w-3.5" strokeWidth={2} />
+                {phones.length} {phones.length === 1 ? 'участник' : phones.length < 5 ? 'участника' : 'участников'}
+              </span>
             )}
-          </button>
+          </div>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={handleClose}
+              className="px-5 py-2.5 text-sm text-text-muted hover:text-text hover:bg-surface rounded-xl transition-colors font-medium"
+            >
+              {result ? "Закрыть" : "Отмена"}
+            </button>
+            <button
+              type="button"
+              onClick={handleCreate}
+              disabled={creating || !name.trim()}
+              className="px-6 py-2.5 bg-accent hover:bg-accent-hover text-bg text-sm font-bold rounded-xl disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 shadow-lg shadow-accent/25 transition-all"
+            >
+              {creating ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" strokeWidth={2} />
+                  Создаю группу...
+                </>
+              ) : (
+                <>
+                  <Plus className="h-4 w-4" strokeWidth={2} />
+                  Создать группу
+                </>
+              )}
+            </button>
+          </div>
         </div>
       </div>
     </div>
