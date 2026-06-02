@@ -7,10 +7,12 @@ import {
   FileUp,
   Loader2,
   Plus,
+  Trash2,
   X,
 } from "lucide-react";
 import Link from "next/link";
-import { apiUpload, nxGet } from "@/lib/api";
+import { apiUpload } from "@/lib/api";
+import { nxGet } from "@/lib/api";
 
 interface Segment {
   id: number;
