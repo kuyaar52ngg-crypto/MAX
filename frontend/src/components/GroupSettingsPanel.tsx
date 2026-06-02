@@ -14,6 +14,7 @@ import {
   X,
 } from "lucide-react";
 import { apiPost, apiUpload } from "@/lib/api";
+import { InviteModal } from "./InviteModal";
 import { Chat, GroupData } from "@/lib/types";
 
 interface GroupSettingsPanelProps {
@@ -57,6 +58,7 @@ export function GroupSettingsPanel({
   const [savingPicture, setSavingPicture] = useState(false);
   const [addPhone, setAddPhone] = useState("");
   const [adding, setAdding] = useState(false);
+  const [showInviteModal, setShowInviteModal] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const isGroup = chat.type === "group";
@@ -352,6 +354,24 @@ export function GroupSettingsPanel({
                 </button>
               </div>
             </div>
+
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setShowInviteModal(true)}
+                className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-bg-elevated border border-border hover:border-accent/40 text-text text-xs font-medium rounded-lg transition-colors"
+              >
+                <UserPlus className="h-3.5 w-3.5" strokeWidth={2} />
+                Массовый инвайт
+              </button>
+            </div>
+
+            <InviteModal
+              open={showInviteModal}
+              groupId={groupId}
+              onClose={() => setShowInviteModal(false)}
+              onInvited={refresh}
+            />
 
             {/* Participants */}
             <div>
