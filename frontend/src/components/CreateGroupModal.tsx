@@ -73,7 +73,7 @@ export function CreateGroupModal({
     <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={handleClose} />
       <div className="relative z-10 w-full max-w-2xl bg-surface border border-border rounded-2xl shadow-2xl flex flex-col max-h-[85vh]">
-        <div className="flex items-center justify-between px-6 py-4 border-b border-border bg-gradient-to-r from-accent/5 to-transparent">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-border bg-gradient-to-r from-accent/5 to-transparent backdrop-blur-md sticky top-0 z-10">
           <h3 className="text-base font-bold text-text flex items-center gap-2.5">
             <div className="p-2 rounded-lg bg-accent/10">
               <Plus className="h-5 w-5 text-accent" strokeWidth={2} />
@@ -138,7 +138,7 @@ export function CreateGroupModal({
           )}
         </div>
 
-        <div className="px-6 py-4 border-t border-border flex items-center justify-between bg-bg-elevated/50">
+        <div className="px-6 py-4 border-t border-border flex items-center justify-between bg-surface/95 backdrop-blur-md sticky bottom-0 z-10">
           <div className="text-xs text-text-muted">
             {phones.length > 0 && (
               <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-accent/10 text-accent rounded-lg font-medium">
