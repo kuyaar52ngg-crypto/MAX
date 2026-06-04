@@ -81,7 +81,6 @@ export function QrPoller({ onAuthorized, onStateChange }: QrPollerProps) {
     return () => {
       cancelledRef.current = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Тикалка обратного отсчёта; по истечении — рефетч QR.
@@ -97,7 +96,6 @@ export function QrPoller({ onAuthorized, onStateChange }: QrPollerProps) {
       });
     }, 1000);
     return () => clearInterval(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading, qrType]);
 
   // Polling /api/status каждые 2 сек — ловим переход в authorized.

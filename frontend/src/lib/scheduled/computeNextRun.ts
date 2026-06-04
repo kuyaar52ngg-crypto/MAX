@@ -88,9 +88,9 @@ function computeNextRecurringRun(args: RecurringArgs): Date | null {
   // Получаем компоненты "after" в user_tz
   const parts = getZonedParts(after, userTz);
 
-  let year = parts.year;
-  let month = parts.month; // 1..12
-  let day = parts.day;
+  const year = parts.year;
+  const month = parts.month; // 1..12
+  const day = parts.day;
   const targetWeekday =
     dayOfWeek !== null && dayOfWeek !== undefined ? dayOfWeek : null;
 
@@ -108,7 +108,7 @@ function computeNextRecurringRun(args: RecurringArgs): Date | null {
     // Mon=0..Sun=6 — приведём к Date.getDay() (Sun=0..Sat=6)
     const jsTargetDow = (targetWeekday + 1) % 7;
     const currentDow = naiveWeekday(candidateLocal);
-    let delta = (jsTargetDow - currentDow + 7) % 7;
+    const delta = (jsTargetDow - currentDow + 7) % 7;
     candidateLocal = addDaysNaive(candidateLocal, delta);
     if (
       isBeforeOrEqual(

@@ -667,7 +667,7 @@ function simulateSmartTime(
   const sends: SimulatedSend[] = [];
 
   const anchorParts = safeIntlParts(anchor, userTz);
-  let cursor = { year: anchorParts.year, month: anchorParts.month, day: anchorParts.day };
+  const cursor = { year: anchorParts.year, month: anchorParts.month, day: anchorParts.day };
 
   for (const phone of phones) {
     const slots = pickRecipientSlots(phone, recipientHistograms, defaultFallback, topN);
@@ -676,7 +676,7 @@ function simulateSmartTime(
     const baseHour = slots[idx % slots.length];
 
     let placed: Date | null = null;
-    let dayParts = cursor;
+    const dayParts = cursor;
     for (let dayOffset = 0; dayOffset <= windowDays && !placed; dayOffset++) {
       const candidateParts =
         dayOffset === 0 ? dayParts : addCalendarDays(cursor, dayOffset, userTz);

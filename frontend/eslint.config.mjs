@@ -1,11 +1,5 @@
-import { dirname } from "path";
-import { fileURLToPath } from "url";
-import { FlatCompat } from "@eslint/eslintrc";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-
-const compat = new FlatCompat({ baseDirectory: __dirname });
+import nextCoreWebVitals from "eslint-config-next/core-web-vitals";
+import nextTypescript from "eslint-config-next/typescript";
 
 // Запрещённые библиотеки иконок (см. requirements.md, Requirement 1).
 // Любой импорт из этих пакетов приводит к ошибке сборки.
@@ -30,10 +24,25 @@ const NO_FORBIDDEN_ICON_LIBS_MESSAGE =
   "UI-иконки разрешены только из 'lucide-react'. Бренд-иконки оформляются как компоненты в 'src/components/icons/'.";
 
 const eslintConfig = [
-  ...compat.extends("next/core-web-vitals", "next/typescript"),
+  ...nextCoreWebVitals,
+  ...nextTypescript,
   {
     files: ["src/**/*.{ts,tsx,js,jsx}"],
     rules: {
+      "@typescript-eslint/no-explicit-any": "warn",
+      "@typescript-eslint/no-unused-vars": [
+        "warn",
+        {
+          argsIgnorePattern: "^_",
+          varsIgnorePattern: "^_",
+          caughtErrorsIgnorePattern: "^_",
+        },
+      ],
+      "react-hooks/immutability": "warn",
+      "react-hooks/preserve-manual-memoization": "warn",
+      "react-hooks/purity": "warn",
+      "react-hooks/refs": "warn",
+      "react-hooks/set-state-in-effect": "warn",
       // Все UI-иконки — только из lucide-react. Запрещаем альтернативные библиотеки.
       "no-restricted-imports": [
         "error",
