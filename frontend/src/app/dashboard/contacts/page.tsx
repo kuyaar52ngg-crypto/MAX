@@ -7,6 +7,7 @@ import {
   Check,
   Download,
   FolderOpen,
+  Loader2,
   Search,
   UserCheck,
   X,
@@ -35,9 +36,14 @@ interface MassResult {
   chatId?: string;
 }
 
-const SAFE_DAILY_CHECK_LIMIT = 20;
+const DEFAULT_WEEKLY_CHECK_LIMIT = 140;
 
-function buildCheckSubmissionPlan(total: number): string {
+function weeklyToDailyLimit(weeklyLimit: number): number {
+  const safeWeekly = Math.max(1, Math.floor(weeklyLimit || DEFAULT_WEEKLY_CHECK_LIMIT));
+  return Math.max(1, Math.ceil(safeWeekly / 7));
+}
+
+function buildCheckSubmissionPlan(total: number, weeklyLimit: number): string {
   if (total <= 0) return "Нет номеров для подачи";
   const formatter = new Intl.DateTimeFormat("ru-RU", {
     weekday: "long",
@@ -45,10 +51,11 @@ function buildCheckSubmissionPlan(total: number): string {
     month: "2-digit",
   });
   const chunks: string[] = [];
+  const dailyLimit = weeklyToDailyLimit(weeklyLimit);
   let remaining = total;
   const date = new Date();
   while (remaining > 0 && chunks.length < 7) {
-    const count = Math.min(SAFE_DAILY_CHECK_LIMIT, remaining);
+    const count = Math.min(dailyLimit, remaining);
     const label = chunks.length === 0 ? "сегодня" : formatter.format(date);
     chunks.push(`${label}: ${count}`);
     remaining -= count;
@@ -72,6 +79,12 @@ export default function ContactsPage() {
   const [massInput, setMassInput] = usePersistedState<string>("contacts:massInput", "");
   const [massPhones, setMassPhones] = usePersistedState<string[]>("contacts:massPhones", []);
   const [massResults, setMassResults] = usePersistedState<MassResult[]>("contacts:massResults", []);
+  const [checkWeeklyLimit, setCheckWeeklyLimit] = usePersistedState<number>(
+    "contacts:checkWeeklyLimit",
+    DEFAULT_WEEKLY_CHECK_LIMIT,
+  );
+  const [massCsvLoading, setMassCsvLoading] = useState(false);
+  const [massCsvError, setMassCsvError] = useState<string | null>(null);
 
   // Anti-ban integration: PreFlight modal + bulk operation hook + StopButton.
   // The hook owns the SSE channel and the active/progress/error state, so we
@@ -160,12 +173,19 @@ export default function ContactsPage() {
   async function handleMassCSV(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
+    setMassCsvLoading(true);
+    setMassCsvError(null);
     const fd = new FormData();
     fd.append("file", file);
     try {
       const data = await apiUpload<{ phones: string[] }>("/api/upload-contacts", fd);
       if (data.phones) setMassPhones((p) => [...new Set([...p, ...data.phones])]);
-    } catch { /* */ }
+    } catch (err: unknown) {
+      setMassCsvError(err instanceof Error ? err.message : "Не удалось загрузить CSV");
+    } finally {
+      setMassCsvLoading(false);
+      e.target.value = "";
+    }
   }
 
   // Open the PreFlight modal with the currently-staged phones. The actual
@@ -197,7 +217,11 @@ export default function ContactsPage() {
     try {
       const headers = await getFlaskHeaders();
       await bulkOp.start(
-        { phones: pendingPhones, auto_schedule_daily: true },
+        {
+          phones: pendingPhones,
+          auto_schedule_daily: true,
+          check_schedule_weekly_limit: checkWeeklyLimit,
+        },
         { headers: headers as Record<string, string> },
       );
     } catch (err) {
@@ -232,6 +256,7 @@ export default function ContactsPage() {
   const dailyWait = bulkOp.progress?.type === "daily_schedule_wait"
     ? bulkOp.progress
     : null;
+  const dailyCheckLimit = weeklyToDailyLimit(checkWeeklyLimit);
 
   return (
     <div className="p-6 lg:p-8 max-w-5xl mx-auto space-y-6">
@@ -318,12 +343,27 @@ export default function ContactsPage() {
           <BarChart3 className="h-4 w-4" strokeWidth={2} aria-hidden="true" />
           Массовая проверка
         </h3>
-        <div className="rounded-xl border border-accent/25 bg-accent/10 px-4 py-3 text-xs text-text-secondary">
-          <strong className="text-text">Автоподача включена:</strong>{" "}
-          система будет проверять не больше {SAFE_DAILY_CHECK_LIMIT} номеров в день.
+        <div className="rounded-xl border border-accent/25 bg-accent/10 px-4 py-3 text-xs text-text-secondary space-y-3">
+          <div>
+            <strong className="text-text">Автоподача включена:</strong>{" "}
+            загрузите хоть 3000 номеров, система будет подавать их по выбранному недельному плану.
+          </div>
+          <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+            <label className="text-text-muted">План проверок в неделю</label>
+            <input
+              type="number"
+              min={1}
+              max={100000}
+              value={checkWeeklyLimit}
+              onChange={(e) => setCheckWeeklyLimit(Math.max(1, Number(e.target.value) || DEFAULT_WEEKLY_CHECK_LIMIT))}
+              disabled={bulkOp.active}
+              className="w-32 px-3 py-2 bg-bg border border-border rounded-lg text-sm text-text focus:outline-none focus:border-accent/50 font-mono disabled:opacity-50"
+            />
+            <span>≈ {dailyCheckLimit} номеров в день</span>
+          </div>
           {pendingMassCount > 0 && (
-            <span className="block mt-1">
-              План: {buildCheckSubmissionPlan(pendingMassCount)}
+            <span className="block">
+              План: {buildCheckSubmissionPlan(pendingMassCount, checkWeeklyLimit)}
             </span>
           )}
         </div>
@@ -345,10 +385,14 @@ export default function ContactsPage() {
         </div>
         <div className="flex justify-between items-center">
           <div className="flex gap-3">
-            <label className="flex items-center gap-2 px-4 py-2 bg-surface border border-border rounded-xl text-xs text-text-secondary cursor-pointer hover:border-accent/40 transition-colors">
-              <FolderOpen className="h-4 w-4" strokeWidth={2} aria-hidden="true" />
-              Загрузить CSV
-              <input type="file" accept=".csv" onChange={handleMassCSV} className="hidden" />
+            <label className={`flex items-center gap-2 px-4 py-2 bg-surface border border-border rounded-xl text-xs text-text-secondary transition-colors ${massCsvLoading ? "opacity-60 cursor-wait" : "cursor-pointer hover:border-accent/40"}`}>
+              {massCsvLoading ? (
+                <Loader2 className="h-4 w-4 animate-spin" strokeWidth={2} aria-hidden="true" />
+              ) : (
+                <FolderOpen className="h-4 w-4" strokeWidth={2} aria-hidden="true" />
+              )}
+              {massCsvLoading ? "Загрузка..." : "Загрузить CSV"}
+              <input type="file" accept=".csv,text/csv" onChange={handleMassCSV} disabled={massCsvLoading} className="hidden" />
             </label>
             <button
               onClick={() => {
@@ -374,6 +418,12 @@ export default function ContactsPage() {
             </button>
           </div>
         </div>
+
+        {massCsvError && (
+          <div role="alert" className="px-4 py-3 rounded-xl text-sm bg-error-bg border border-error/20 text-error">
+            CSV: {massCsvError}
+          </div>
+        )}
 
         {bulkOp.error && (
           <div role="alert" className="px-4 py-3 rounded-xl text-sm bg-error-bg border border-error/20 text-error">

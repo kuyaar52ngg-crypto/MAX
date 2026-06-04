@@ -85,7 +85,7 @@ def parse_cors_origins():
 # Allow Next.js frontend and local development
 CORS(app, resources={r"/api/*": {
     "origins": parse_cors_origins(),
-    "allow_headers": ["Content-Type", "Authorization", "X-Green-Api-Id", "X-Green-Api-Token", "X-Green-Api-Url"],
+    "allow_headers": ["Content-Type", "Authorization", "X-Green-Api-Id", "X-Green-Api-Token", "X-Green-Api-Url", "X-User-Id"],
     "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     "supports_credentials": True,
 }})
@@ -528,7 +528,7 @@ def api_upload_contacts():
     if 'file' not in request.files:
         return jsonify({'error': 'no file'}), 400
     f = request.files['file']
-    if not f.filename.endswith('.csv'):
+    if not f.filename.lower().endswith('.csv'):
         return jsonify({'error': 'only CSV files accepted'}), 400
     save_path = os.path.join(UPLOAD_FOLDER, 'contacts.csv')
     f.save(save_path)
@@ -1625,20 +1625,37 @@ def _resolve_notification_user_id() -> Optional[str]:
     return value or None
 
 
-SAFE_DAILY_CHECK_LIMIT = int(os.getenv('SAFE_DAILY_CHECK_LIMIT', '20'))
+DEFAULT_WEEKLY_CHECK_LIMIT = int(os.getenv('DEFAULT_WEEKLY_CHECK_LIMIT', '140'))
+MAX_WEEKLY_CHECK_LIMIT = int(os.getenv('MAX_WEEKLY_CHECK_LIMIT', '100000'))
 
 
-def _effective_daily_check_limit(config) -> int:
-    """Безопасный дневной лимит проверки номеров.
+def _default_daily_check_limit(config) -> int:
+    """Дневной лимит для старого режима без планирования.
 
-    Проверка номеров в MAX самая рискованная операция, поэтому даже если
-    в настройках по старой схеме стоит 1000, автоматическая подача не
-    даст обработать больше 20 номеров за UTC-сутки. Если пользователь
-    выставил более строгий лимит, например 5 для свежего аккаунта,
-    используем его.
+    Если пользователь не включил автоподачу, оставляем консервативный
+    лимит 20/день, либо более строгий лимит из anti-ban настроек.
+    В режиме автоподачи лимит считается из выбранного недельного плана.
     """
-    configured = int(getattr(config, 'daily_check_limit', SAFE_DAILY_CHECK_LIMIT) or SAFE_DAILY_CHECK_LIMIT)
-    return max(1, min(configured, SAFE_DAILY_CHECK_LIMIT))
+    configured = int(getattr(config, 'daily_check_limit', 20) or 20)
+    return max(1, min(configured, 20))
+
+
+def _weekly_limit_to_daily_limit(weekly_limit: int) -> int:
+    """Распределить выбранный пользователем недельный план по дням."""
+    weekly = max(1, min(int(weekly_limit), MAX_WEEKLY_CHECK_LIMIT))
+    return max(1, (weekly + 6) // 7)
+
+
+def _resolve_check_schedule_limits(data: dict, config) -> tuple[int, int]:
+    """Вернуть ``(weekly_limit, daily_limit)`` для проверки номеров."""
+    raw_weekly = data.get('check_schedule_weekly_limit', DEFAULT_WEEKLY_CHECK_LIMIT)
+    try:
+        weekly_limit = int(raw_weekly)
+    except (TypeError, ValueError):
+        weekly_limit = DEFAULT_WEEKLY_CHECK_LIMIT
+    weekly_limit = max(1, min(weekly_limit, MAX_WEEKLY_CHECK_LIMIT))
+    daily_limit = _weekly_limit_to_daily_limit(weekly_limit)
+    return weekly_limit, daily_limit
 
 
 def _seconds_until_next_utc_day() -> float:
@@ -1705,13 +1722,17 @@ def api_check_contacts_bulk():
             'state': current_state,
         }), 409
 
-    # --- Дневной лимит (Requirement 1.4, Property 4) --------------------
-    # Автоподача делит большой список на безопасные порции: максимум
-    # 20 проверок за UTC-сутки (или меньше, если в настройках указан
-    # более строгий лимит). Без флага auto_schedule_daily сохраняем
-    # прежнее поведение и возвращаем 429.
+    # --- План проверки и дневной лимит ---------------------------------
+    # Пользователь выбирает недельный объём, например 140 номеров/неделю.
+    # Сервер распределяет его по дням: 140 -> 20/день, 350 -> 50/день.
+    # Большой список (например 3000 номеров) принимается целиком и
+    # автоматически подаётся порциями, пока очередь не закончится.
     auto_schedule_daily = bool(data.get('auto_schedule_daily', False))
-    daily_limit = _effective_daily_check_limit(config)
+    if auto_schedule_daily:
+        weekly_limit, daily_limit = _resolve_check_schedule_limits(data, config)
+    else:
+        weekly_limit = DEFAULT_WEEKLY_CHECK_LIMIT
+        daily_limit = _default_daily_check_limit(config)
     processed_today = audit_logger.count_in_window(
         user_id, 'check', 'day'
     )
@@ -1738,6 +1759,7 @@ def api_check_contacts_bulk():
             'contacts': contacts_payload,
             'params': {
                 'auto_schedule_daily': auto_schedule_daily,
+                'weekly_limit': weekly_limit,
                 'daily_limit': daily_limit,
                 'schedule_plan': schedule_plan,
             },
@@ -1784,6 +1806,7 @@ def api_check_contacts_bulk():
         'total': len(phones),
         'status': 'running',
         'auto_schedule_daily': auto_schedule_daily,
+        'weekly_limit': weekly_limit,
         'daily_limit': daily_limit,
         'available_today': available_today,
         'schedule_plan': schedule_plan,
@@ -1820,7 +1843,7 @@ def _run_check_worker(
     final_reason = None
     effective_daily_limit = max(
         1,
-        int(daily_limit) if daily_limit is not None else _effective_daily_check_limit(config),
+        int(daily_limit) if daily_limit is not None else _default_daily_check_limit(config),
     )
     worker_day = datetime.utcnow().date()
     worker_day_processed = 0
