@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import {
+  Bell,
   KeyRound,
   Link2,
   RefreshCw,
@@ -13,6 +14,7 @@ import { apiGet, apiPost } from "@/lib/api";
 import { AntiBanSettingsForm } from "@/components/anti-ban/AntiBanSettingsForm";
 import { AntiBanConfig, DEFAULT_ANTI_BAN_CONFIG } from "@/lib/anti-ban";
 import { CredentialsWizard } from "@/components/settings/CredentialsWizard";
+import { NotificationSettingsForm } from "@/components/settings/NotificationSettingsForm";
 import { SuiteSettingsForm } from "@/components/scheduling";
 import { usePersistedState } from "@/lib/hooks/usePersistedState";
 
@@ -206,6 +208,20 @@ export default function SettingsPage() {
         )}
       </div>
 
+      {/* Global notifications */}
+      <div className="settings-section glass rounded-2xl p-6 space-y-4">
+        <div>
+          <h3 className="text-sm font-semibold text-text-secondary flex items-center gap-2">
+            <Bell className="h-4 w-4" strokeWidth={2} aria-hidden="true" />
+            Уведомления
+          </h3>
+          <p className="text-xs text-text-muted mt-1">
+            Общий Telegram-канал для уведомлений по рассылкам, проверке номеров, планировщику и ошибкам.
+          </p>
+        </div>
+        <NotificationSettingsForm />
+      </div>
+
       {/* Broadcast Scheduling Suite settings */}
       <div className="settings-section glass rounded-2xl p-6 space-y-4">
         <div>
@@ -214,7 +230,7 @@ export default function SettingsPage() {
             Планирование рассылок
           </h3>
           <p className="text-xs text-text-muted mt-1">
-            Approval gate, лимиты Burst и канал Telegram-уведомлений.
+            Approval gate и лимиты Burst для планировщика рассылок.
           </p>
         </div>
         <SuiteSettingsForm />

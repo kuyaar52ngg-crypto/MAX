@@ -25,6 +25,7 @@ from anti_ban.audit import audit_logger
 from anti_ban.payload import deserialize_payload, PayloadValidationError
 from anti_ban.watchdog import Watchdog
 from anti_ban.state_monitor import StateMonitor
+from notification_service import send_telegram_notification
 # Пакет ``scheduling`` подключается к приложению уже на этапе bootstrap'а,
 # чтобы стратегии (``WindowEngine``, ``SmartTimeEngine``,
 # ``ABTimeEngine``, ``BurstEngine``) могли быть зарегистрированы в
@@ -510,7 +511,14 @@ def api_check_contact():
     phone = data.get('phone', '').strip()
     if not phone:
         return jsonify({'error': 'phone required'}), 400
+    notification_user_id = _resolve_notification_user_id()
     exist, chat_id = current_bot().check_contact(phone)
+    send_telegram_notification(
+        notification_user_id,
+        "Проверка номера завершена",
+        f"Номер: {phone}\nСтатус: {'найден' if exist else 'не найден'}"
+        + (f"\nchatId: {chat_id}" if chat_id else ""),
+    )
     return jsonify({'phone': phone, 'exists': exist, 'chatId': chat_id})
 
 
@@ -737,6 +745,7 @@ def api_broadcast():
         return credentials_error_response(exc)
 
     user_id = _resolve_user_id()
+    notification_user_id = _resolve_notification_user_id()
     config = config_loader.get(user_id)
 
     # --- Pre-flight: getStateInstance (Requirement 3.3) -----------------
@@ -825,6 +834,7 @@ def api_broadcast():
             'rate_limiter': rate_limiter,
             'config': config,
             'bot_instance': request_bot,
+            'notification_user_id': notification_user_id,
         },
         name=f'broadcast-worker-{run_id}',
         daemon=True,
@@ -861,6 +871,7 @@ def _run_broadcast_worker(
     bot_instance: MaxBot,
     start_index: int = 0,
     schedule_type: Optional[str] = None,
+    notification_user_id: Optional[str] = None,
 ):
     """Worker-поток `Broadcast_Service`.
 
@@ -998,6 +1009,12 @@ def _run_broadcast_worker(
     # любом случае, потому что `BurstEngine.delay_for(...) >= delay_min`.
     burst_throttle_state_provider = (lambda: "normal") if burst_mode else None
 
+    send_telegram_notification(
+        notification_user_id,
+        "Рассылка запущена",
+        f"Получателей: {total}\nID операции: {run_id}",
+    )
+
     try:
         if is_multipart and uploaded_path:
             bot_instance.broadcast_with_uploaded_file(
@@ -1084,6 +1101,18 @@ def _run_broadcast_worker(
                 "broadcast worker: failed to finalise operation_run %s",
                 run_id,
             )
+
+        send_telegram_notification(
+            notification_user_id,
+            "Рассылка завершена",
+            (
+                f"Статус: {final_reason or final_status}\n"
+                f"Получателей: {total}\n"
+                f"Отправлено: {counters['sent']}\n"
+                f"Не найдено: {counters['not_found']}\n"
+                f"Ошибок: {counters['failed']}"
+            ),
+        )
 
         # --- Финальное SSE-событие -------------------------------------
         sse_push({
@@ -1585,6 +1614,57 @@ def _resolve_user_id() -> str:
     return request.headers.get('X-Green-Api-Id', '').strip() or 'unknown'
 
 
+def _resolve_notification_user_id() -> Optional[str]:
+    """Supabase user_id для глобальных уведомлений.
+
+    Flask-операции исторически используют GREEN-API id как audit user_id,
+    но Telegram-настройки лежат в Postgres profiles по UUID пользователя.
+    Фронтенд передаёт этот UUID в X-User-Id.
+    """
+    value = request.headers.get('X-User-Id', '').strip()
+    return value or None
+
+
+SAFE_DAILY_CHECK_LIMIT = int(os.getenv('SAFE_DAILY_CHECK_LIMIT', '20'))
+
+
+def _effective_daily_check_limit(config) -> int:
+    """Безопасный дневной лимит проверки номеров.
+
+    Проверка номеров в MAX самая рискованная операция, поэтому даже если
+    в настройках по старой схеме стоит 1000, автоматическая подача не
+    даст обработать больше 20 номеров за UTC-сутки. Если пользователь
+    выставил более строгий лимит, например 5 для свежего аккаунта,
+    используем его.
+    """
+    configured = int(getattr(config, 'daily_check_limit', SAFE_DAILY_CHECK_LIMIT) or SAFE_DAILY_CHECK_LIMIT)
+    return max(1, min(configured, SAFE_DAILY_CHECK_LIMIT))
+
+
+def _seconds_until_next_utc_day() -> float:
+    now = datetime.utcnow()
+    tomorrow = (now + timedelta(days=1)).replace(
+        hour=0, minute=0, second=0, microsecond=0,
+    )
+    return max(1.0, (tomorrow - now).total_seconds() + 2.0)
+
+
+def _build_daily_check_plan(total: int, available_today: int, daily_limit: int) -> list[dict]:
+    """План подач: сегодня N, дальше по daily_limit каждый день."""
+    remaining = max(0, int(total))
+    plan = []
+    day = datetime.utcnow().date()
+    while remaining > 0:
+        capacity = max(0, int(available_today)) if not plan else int(daily_limit)
+        count = min(remaining, capacity)
+        if count > 0:
+            plan.append({'date': day.isoformat(), 'count': count})
+            remaining -= count
+        day = day + timedelta(days=1)
+        available_today = daily_limit
+    return plan
+
+
 @app.route('/api/check-contacts-bulk', methods=['POST'])
 def api_check_contacts_bulk():
     global _check_active
@@ -1606,6 +1686,7 @@ def api_check_contacts_bulk():
         return credentials_error_response(exc)
 
     user_id = _resolve_user_id()
+    notification_user_id = _resolve_notification_user_id()
     config = config_loader.get(user_id)
 
     # --- Pre-flight: getStateInstance (Requirement 3.3) -----------------
@@ -1625,14 +1706,26 @@ def api_check_contacts_bulk():
         }), 409
 
     # --- Дневной лимит (Requirement 1.4, Property 4) --------------------
+    # Автоподача делит большой список на безопасные порции: максимум
+    # 20 проверок за UTC-сутки (или меньше, если в настройках указан
+    # более строгий лимит). Без флага auto_schedule_daily сохраняем
+    # прежнее поведение и возвращаем 429.
+    auto_schedule_daily = bool(data.get('auto_schedule_daily', False))
+    daily_limit = _effective_daily_check_limit(config)
     processed_today = audit_logger.count_in_window(
         user_id, 'check', 'day'
     )
-    if processed_today + len(phones) > config.daily_check_limit:
+    available_today = max(0, daily_limit - processed_today)
+    schedule_plan = _build_daily_check_plan(
+        len(phones), available_today, daily_limit,
+    )
+    if not auto_schedule_daily and processed_today + len(phones) > daily_limit:
         return jsonify({
             'error': 'daily_limit_exceeded',
-            'limit': config.daily_check_limit,
+            'limit': daily_limit,
             'current': processed_today,
+            'available_today': available_today,
+            'schedule_plan': schedule_plan,
         }), 429
 
     # --- Создание OperationRun + регистрация worker ---------------------
@@ -1641,7 +1734,14 @@ def api_check_contacts_bulk():
         user_id=user_id,
         kind='check',
         total=len(phones),
-        payload={'contacts': contacts_payload, 'params': {}},
+        payload={
+            'contacts': contacts_payload,
+            'params': {
+                'auto_schedule_daily': auto_schedule_daily,
+                'daily_limit': daily_limit,
+                'schedule_plan': schedule_plan,
+            },
+        },
     )
 
     cancel_event = threading.Event()
@@ -1671,6 +1771,9 @@ def api_check_contacts_bulk():
             'rate_limiter': rate_limiter,
             'config': config,
             'bot_instance': request_bot,
+            'auto_schedule_daily': auto_schedule_daily,
+            'daily_limit': daily_limit,
+            'notification_user_id': notification_user_id,
         },
         name=f'check-worker-{run_id}',
         daemon=True,
@@ -1680,6 +1783,10 @@ def api_check_contacts_bulk():
         'operation_run_id': run_id,
         'total': len(phones),
         'status': 'running',
+        'auto_schedule_daily': auto_schedule_daily,
+        'daily_limit': daily_limit,
+        'available_today': available_today,
+        'schedule_plan': schedule_plan,
     }), 202
 
 
@@ -1693,6 +1800,9 @@ def _run_check_worker(
     config,
     bot_instance: MaxBot,
     start_index: int = 0,
+    auto_schedule_daily: bool = False,
+    daily_limit: Optional[int] = None,
+    notification_user_id: Optional[str] = None,
 ):
     """Worker-поток `Bulk_Check_Service`.
 
@@ -1708,6 +1818,18 @@ def _run_check_worker(
     last_idx = start_index - 1
     final_status: str = 'completed'
     final_reason = None
+    effective_daily_limit = max(
+        1,
+        int(daily_limit) if daily_limit is not None else _effective_daily_check_limit(config),
+    )
+    worker_day = datetime.utcnow().date()
+    worker_day_processed = 0
+
+    send_telegram_notification(
+        notification_user_id,
+        "Проверка номеров запущена",
+        f"Номеров: {total}\nID операции: {run_id}\nЛимит: {effective_daily_limit} в день",
+    )
 
     try:
         for i in range(start_index, total):
@@ -1738,6 +1860,61 @@ def _run_check_worker(
                 )
                 final_status = 'banned'
                 final_reason = live_state
+                break
+
+            # --- Daily auto-schedule ------------------------------------
+            # Если дневная квота исчерпана, автоподача не завершает run,
+            # а ждёт следующие UTC-сутки и продолжает с того же индекса.
+            # Это даёт сценарий 20 номеров в понедельник, 20 во вторник
+            # и так далее без ручного перезапуска.
+            while True:
+                today = datetime.utcnow().date()
+                if today != worker_day:
+                    worker_day = today
+                    worker_day_processed = 0
+
+                processed_today = audit_logger.count_in_window(
+                    user_id, 'check', 'day'
+                )
+                effective_today = max(processed_today, worker_day_processed)
+                if effective_today < effective_daily_limit:
+                    break
+
+                if not auto_schedule_daily:
+                    final_status = 'paused'
+                    final_reason = 'daily_limit'
+                    break
+
+                wait_seconds = _seconds_until_next_utc_day()
+                next_start_at = (
+                    datetime.utcnow() + timedelta(seconds=wait_seconds)
+                ).isoformat(timespec='seconds') + 'Z'
+                _push_all(_check_clients, {
+                    'type': 'daily_schedule_wait',
+                    'done': processed,
+                    'total': total,
+                    'operation_run_id': run_id,
+                    'daily_limit': effective_daily_limit,
+                    'next_start_at': next_start_at,
+                })
+                logger.info(
+                    "check worker %s: daily limit %s reached, waiting until %s",
+                    run_id, effective_daily_limit, next_start_at,
+                )
+
+                remaining_wait = wait_seconds
+                while remaining_wait > 0 and not cancel_event.is_set():
+                    registry.heartbeat(run_id)
+                    chunk = min(60.0, remaining_wait)
+                    cancel_event.wait(chunk)
+                    remaining_wait -= chunk
+
+                if cancel_event.is_set():
+                    final_status = 'aborted'
+                    final_reason = 'cancelled'
+                    break
+
+            if final_status in ('paused', 'aborted'):
                 break
 
             # --- Hourly limit (Requirement 1.5, Property 4) -------------
@@ -1815,6 +1992,7 @@ def _run_check_worker(
 
             # --- Persist progress (Requirement 4.5, 7.2) ----------------
             processed = i + 1
+            worker_day_processed += 1
             last_idx = i
             audit_logger.update_progress(
                 run_id,
@@ -1847,6 +2025,16 @@ def _run_check_worker(
             logger.exception(
                 "check worker: failed to finalise operation_run %s", run_id
             )
+
+        send_telegram_notification(
+            notification_user_id,
+            "Проверка номеров завершена",
+            (
+                f"Статус: {final_reason or final_status}\n"
+                f"Проверено: {processed}/{total}\n"
+                f"ID операции: {run_id}"
+            ),
+        )
 
         # --- Финальное SSE-событие --------------------------------------
         _push_all(_check_clients, {
@@ -2233,6 +2421,9 @@ def api_bulk_operation_resume():
                 'config': config,
                 'bot_instance': request_bot,
                 'start_index': start_index,
+                'auto_schedule_daily': bool(params.get('auto_schedule_daily')),
+                'daily_limit': params.get('daily_limit'),
+                'notification_user_id': _resolve_notification_user_id(),
             },
             name=f'check-worker-{run_id}-resume',
             daemon=True,

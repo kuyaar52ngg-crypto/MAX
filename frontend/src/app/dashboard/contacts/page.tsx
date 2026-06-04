@@ -35,6 +35,29 @@ interface MassResult {
   chatId?: string;
 }
 
+const SAFE_DAILY_CHECK_LIMIT = 20;
+
+function buildCheckSubmissionPlan(total: number): string {
+  if (total <= 0) return "Нет номеров для подачи";
+  const formatter = new Intl.DateTimeFormat("ru-RU", {
+    weekday: "long",
+    day: "2-digit",
+    month: "2-digit",
+  });
+  const chunks: string[] = [];
+  let remaining = total;
+  const date = new Date();
+  while (remaining > 0 && chunks.length < 7) {
+    const count = Math.min(SAFE_DAILY_CHECK_LIMIT, remaining);
+    const label = chunks.length === 0 ? "сегодня" : formatter.format(date);
+    chunks.push(`${label}: ${count}`);
+    remaining -= count;
+    date.setDate(date.getDate() + 1);
+  }
+  if (remaining > 0) chunks.push(`ещё ${remaining} позже`);
+  return chunks.join(", ");
+}
+
 export default function ContactsPage() {
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [loading, setLoading] = useState(true);
@@ -174,7 +197,7 @@ export default function ContactsPage() {
     try {
       const headers = await getFlaskHeaders();
       await bulkOp.start(
-        { phones: pendingPhones },
+        { phones: pendingPhones, auto_schedule_daily: true },
         { headers: headers as Record<string, string> },
       );
     } catch (err) {
@@ -204,6 +227,11 @@ export default function ContactsPage() {
 
   const progressDone = typeof bulkOp.progress?.done === "number" ? bulkOp.progress.done : 0;
   const progressTotal = typeof bulkOp.progress?.total === "number" ? bulkOp.progress.total : 0;
+  const checkedPhoneSet = new Set(massResults.map((r) => r.phone));
+  const pendingMassCount = massPhones.filter((p) => !checkedPhoneSet.has(p)).length;
+  const dailyWait = bulkOp.progress?.type === "daily_schedule_wait"
+    ? bulkOp.progress
+    : null;
 
   return (
     <div className="p-6 lg:p-8 max-w-5xl mx-auto space-y-6">
@@ -290,6 +318,15 @@ export default function ContactsPage() {
           <BarChart3 className="h-4 w-4" strokeWidth={2} aria-hidden="true" />
           Массовая проверка
         </h3>
+        <div className="rounded-xl border border-accent/25 bg-accent/10 px-4 py-3 text-xs text-text-secondary">
+          <strong className="text-text">Автоподача включена:</strong>{" "}
+          система будет проверять не больше {SAFE_DAILY_CHECK_LIMIT} номеров в день.
+          {pendingMassCount > 0 && (
+            <span className="block mt-1">
+              План: {buildCheckSubmissionPlan(pendingMassCount)}
+            </span>
+          )}
+        </div>
         <div className="flex flex-wrap gap-2 p-3 bg-bg/50 border border-border rounded-xl min-h-[48px]">
           {massPhones.map((p, i) => (
             <span key={i} className="inline-flex items-center gap-1 px-2.5 py-1 bg-accent/15 border border-accent/20 rounded-lg text-xs text-accent-light">
@@ -341,6 +378,12 @@ export default function ContactsPage() {
         {bulkOp.error && (
           <div role="alert" className="px-4 py-3 rounded-xl text-sm bg-error-bg border border-error/20 text-error">
             {bulkOp.error}
+          </div>
+        )}
+
+        {dailyWait && (
+          <div className="px-4 py-3 rounded-xl text-sm bg-warning-bg border border-warning/20 text-warning">
+            Дневной лимит достигнут. Следующая автоподача начнётся после сброса лимита: {String(dailyWait.next_start_at ?? "завтра")}.
           </div>
         )}
 

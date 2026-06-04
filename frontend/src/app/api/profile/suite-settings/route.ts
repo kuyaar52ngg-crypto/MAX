@@ -24,6 +24,19 @@ import {
 
 export const dynamic = "force-dynamic";
 
+const NOTIFICATION_EVENT_KINDS = [
+  "scheduled",
+  "started",
+  "paused",
+  "resumed",
+  "completed",
+  "failed",
+  "anti_ban_threshold",
+  "awaiting_approval",
+  "ab_time_completed",
+  "auto_snoozed",
+] as const;
+
 interface SuiteSettingsResponse {
   approval_required_above_n: number;
   burst_recipient_limit: number;
@@ -159,6 +172,38 @@ export async function PUT(req: NextRequest) {
     const fresh = await prismaRetry(() =>
       prisma.profile.findUnique({ where: { user_id: user.id } }),
     );
+
+    if (
+      body.telegram_bot_token !== undefined ||
+      body.telegram_chat_id !== undefined
+    ) {
+      const telegramEnabled = Boolean(
+        fresh?.telegram_bot_token && fresh?.telegram_chat_id,
+      );
+      await prismaRetry(() =>
+        prisma.$transaction(
+          NOTIFICATION_EVENT_KINDS.map((kind) =>
+            prisma.notificationPreference.upsert({
+              where: {
+                user_id_event_kind_channel: {
+                  user_id: user.id,
+                  event_kind: kind,
+                  channel: "telegram",
+                },
+              },
+              create: {
+                user_id: user.id,
+                event_kind: kind,
+                channel: "telegram",
+                enabled: telegramEnabled,
+              },
+              update: { enabled: telegramEnabled },
+            }),
+          ),
+        ),
+      );
+    }
+
     const response: SuiteSettingsResponse = {
       approval_required_above_n: fresh?.approval_required_above_n ?? 0,
       burst_recipient_limit: fresh?.burst_recipient_limit ?? 100,

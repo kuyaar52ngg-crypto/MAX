@@ -90,6 +90,16 @@ export async function getFlaskHeaders(json = true): Promise<HeadersInit> {
   headers["X-Green-Api-Token"] = credentials.green_api_token;
   headers["X-Green-Api-Url"] = credentials.green_api_url || "https://api.green-api.com";
 
+  try {
+    const supabase = createClient();
+    const { data } = await supabase.auth.getSession();
+    if (data.session?.user?.id) {
+      headers["X-User-Id"] = data.session.user.id;
+    }
+  } catch {
+    // Telegram notifications are best-effort; GREEN-API requests must still work.
+  }
+
   return headers;
 }
 
