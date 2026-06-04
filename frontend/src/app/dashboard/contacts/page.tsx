@@ -4,7 +4,9 @@ import { useEffect, useState } from "react";
 import {
   AlertTriangle,
   BarChart3,
+  CalendarClock,
   Check,
+  ChevronDown,
   Download,
   FolderOpen,
   Loader2,
@@ -96,6 +98,8 @@ export default function ContactsPage() {
   const [antiBanConfig, setAntiBanConfig] = useState<AntiBanConfig>(DEFAULT_ANTI_BAN_CONFIG);
 
   const [isAccordionOpen, setIsAccordionOpen] = useState(false);
+  const [scheduleModalOpen, setScheduleModalOpen] = useState(false);
+  const [scheduleDraftLimit, setScheduleDraftLimit] = useState(checkWeeklyLimit);
 
   useEffect(() => { loadContacts(); }, []);
 
@@ -257,6 +261,22 @@ export default function ContactsPage() {
     ? bulkOp.progress
     : null;
   const dailyCheckLimit = weeklyToDailyLimit(checkWeeklyLimit);
+  const visibleMassPhones = isAccordionOpen ? massPhones : massPhones.slice(0, 12);
+  const hiddenMassPhonesCount = Math.max(0, massPhones.length - visibleMassPhones.length);
+  const estimatedPlanDays = pendingMassCount > 0
+    ? Math.ceil(pendingMassCount / dailyCheckLimit)
+    : 0;
+
+  function openScheduleModal() {
+    setScheduleDraftLimit(checkWeeklyLimit);
+    setScheduleModalOpen(true);
+  }
+
+  function saveScheduleModal() {
+    const normalized = Math.max(1, Math.min(100000, Math.floor(scheduleDraftLimit || DEFAULT_WEEKLY_CHECK_LIMIT)));
+    setCheckWeeklyLimit(normalized);
+    setScheduleModalOpen(false);
+  }
 
   return (
     <div className="p-6 lg:p-8 max-w-5xl mx-auto space-y-6">
@@ -344,44 +364,97 @@ export default function ContactsPage() {
           Массовая проверка
         </h3>
         <div className="rounded-xl border border-accent/25 bg-accent/10 px-4 py-3 text-xs text-text-secondary space-y-3">
-          <div>
-            <strong className="text-text">Автоподача включена:</strong>{" "}
-            загрузите хоть 3000 номеров, система будет подавать их по выбранному недельному плану.
-          </div>
-          <div className="flex flex-col sm:flex-row sm:items-center gap-2">
-            <label className="text-text-muted">План проверок в неделю</label>
-            <input
-              type="number"
-              min={1}
-              max={100000}
-              value={checkWeeklyLimit}
-              onChange={(e) => setCheckWeeklyLimit(Math.max(1, Number(e.target.value) || DEFAULT_WEEKLY_CHECK_LIMIT))}
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <strong className="text-text">Автоподача включена:</strong>{" "}
+              загрузите хоть 3000 номеров, система будет подавать их по выбранному недельному плану.
+            </div>
+            <button
+              type="button"
+              onClick={openScheduleModal}
               disabled={bulkOp.active}
-              className="w-32 px-3 py-2 bg-bg border border-border rounded-lg text-sm text-text focus:outline-none focus:border-accent/50 font-mono disabled:opacity-50"
-            />
-            <span>≈ {dailyCheckLimit} номеров в день</span>
+              className="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-accent text-bg text-xs font-medium hover:bg-accent-hover transition-colors disabled:opacity-50"
+            >
+              <CalendarClock className="h-4 w-4" strokeWidth={2} aria-hidden="true" />
+              Настроить план
+            </button>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-3">
+            <div className="rounded-lg bg-bg/70 border border-border/70 px-3 py-2">
+              <div className="text-text-muted">В неделю</div>
+              <div className="text-text font-semibold">{checkWeeklyLimit}</div>
+            </div>
+            <div className="rounded-lg bg-bg/70 border border-border/70 px-3 py-2">
+              <div className="text-text-muted">В день</div>
+              <div className="text-text font-semibold">≈ {dailyCheckLimit}</div>
+            </div>
+            <div className="rounded-lg bg-bg/70 border border-border/70 px-3 py-2">
+              <div className="text-text-muted">Очередь</div>
+              <div className="text-text font-semibold">{pendingMassCount}</div>
+            </div>
           </div>
           {pendingMassCount > 0 && (
             <span className="block">
               План: {buildCheckSubmissionPlan(pendingMassCount, checkWeeklyLimit)}
+              {estimatedPlanDays > 7 ? `, всего примерно ${estimatedPlanDays} дней` : ""}
             </span>
           )}
         </div>
-        <div className="flex flex-wrap gap-2 p-3 bg-bg/50 border border-border rounded-xl min-h-[48px]">
-          {massPhones.map((p, i) => (
-            <span key={i} className="inline-flex items-center gap-1 px-2.5 py-1 bg-accent/15 border border-accent/20 rounded-lg text-xs text-accent-light">
-              {p}
-              <button onClick={() => setMassPhones(ph => ph.filter((_, idx) => idx !== i))} className="hover:text-error transition-colors">×</button>
+
+        <div className="rounded-xl bg-bg/50 border border-border overflow-hidden">
+          <button
+            type="button"
+            onClick={() => setIsAccordionOpen((v) => !v)}
+            className="w-full flex items-center justify-between gap-3 px-4 py-3 text-left hover:bg-surface/60 transition-colors"
+          >
+            <span>
+              <span className="block text-sm font-medium text-text">Список номеров</span>
+              <span className="block text-xs text-text-muted">
+                Загружено: {massPhones.length}. {isAccordionOpen ? "Нажмите, чтобы свернуть список." : "Список свернут, чтобы страница не растягивалась."}
+              </span>
             </span>
-          ))}
-          <input
-            type="text"
-            value={massInput}
-            onChange={(e) => setMassInput(e.target.value)}
-            onKeyDown={handleMassKeyDown}
-            placeholder={massPhones.length ? "" : "Вводите номера (Enter или запятая)..."}
-            className="flex-1 min-w-[200px] bg-transparent text-sm text-text placeholder:text-text-muted outline-none"
-          />
+            <ChevronDown
+              className={`h-4 w-4 text-text-muted transition-transform ${isAccordionOpen ? "rotate-180" : ""}`}
+              strokeWidth={2}
+              aria-hidden="true"
+            />
+          </button>
+          <div className={`border-t border-border p-3 ${isAccordionOpen ? "max-h-72 overflow-y-auto" : ""}`}>
+            <div className="flex flex-wrap gap-2 min-h-[40px]">
+              {visibleMassPhones.map((p, i) => (
+                <span key={`${p}-${i}`} className="inline-flex items-center gap-1 px-2.5 py-1 bg-accent/15 border border-accent/20 rounded-lg text-xs text-accent-light">
+                  {p}
+                  <button
+                    type="button"
+                    onClick={() => setMassPhones((ph) => ph.filter((_, idx) => idx !== i))}
+                    disabled={bulkOp.active}
+                    className="hover:text-error transition-colors disabled:opacity-40"
+                    aria-label={`Удалить номер ${p}`}
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+              {!isAccordionOpen && hiddenMassPhonesCount > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setIsAccordionOpen(true)}
+                  className="px-2.5 py-1 rounded-lg text-xs bg-surface border border-border text-text-secondary hover:border-accent/40 transition-colors"
+                >
+                  ещё {hiddenMassPhonesCount}
+                </button>
+              )}
+              <input
+                type="text"
+                value={massInput}
+                onChange={(e) => setMassInput(e.target.value)}
+                onKeyDown={handleMassKeyDown}
+                placeholder={massPhones.length ? "Добавить номер..." : "Вводите номера (Enter или запятая)..."}
+                disabled={bulkOp.active}
+                className="flex-1 min-w-[200px] bg-transparent text-sm text-text placeholder:text-text-muted outline-none disabled:opacity-50"
+              />
+            </div>
+          </div>
         </div>
         <div className="flex justify-between items-center">
           <div className="flex gap-3">
@@ -480,6 +553,97 @@ export default function ContactsPage() {
           </div>
         )}
       </div>
+
+      {scheduleModalOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="check-schedule-title"
+        >
+          <div className="w-full max-w-md rounded-2xl border border-border bg-bg-elevated shadow-2xl">
+            <div className="flex items-start justify-between gap-4 border-b border-border px-5 py-4">
+              <div>
+                <h3 id="check-schedule-title" className="text-base font-semibold text-text">
+                  Планирование проверки номеров
+                </h3>
+                <p className="mt-1 text-xs text-text-muted">
+                  Выберите сколько номеров проверять в неделю. Система сама распределит очередь по дням.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setScheduleModalOpen(false)}
+                className="rounded-lg p-1 text-text-muted hover:bg-surface hover:text-text transition-colors"
+                aria-label="Закрыть"
+              >
+                <X className="h-5 w-5" strokeWidth={2} aria-hidden="true" />
+              </button>
+            </div>
+
+            <div className="space-y-4 px-5 py-4">
+              <div>
+                <label className="block text-sm font-medium text-text mb-2">
+                  Номеров в неделю
+                </label>
+                <input
+                  type="number"
+                  min={1}
+                  max={100000}
+                  value={scheduleDraftLimit}
+                  onChange={(e) => setScheduleDraftLimit(Math.max(1, Number(e.target.value) || DEFAULT_WEEKLY_CHECK_LIMIT))}
+                  className="w-full px-3 py-2 bg-bg border border-border rounded-lg text-sm text-text focus:outline-none focus:border-accent/50 font-mono"
+                  autoFocus
+                />
+              </div>
+
+              <div className="rounded-xl border border-border bg-bg px-4 py-3 text-sm text-text-secondary space-y-1">
+                <div>В день: <span className="font-semibold text-text">≈ {weeklyToDailyLimit(scheduleDraftLimit)}</span></div>
+                <div>Очередь сейчас: <span className="font-semibold text-text">{pendingMassCount}</span></div>
+                {pendingMassCount > 0 && (
+                  <div>
+                    Длительность: <span className="font-semibold text-text">примерно {Math.ceil(pendingMassCount / weeklyToDailyLimit(scheduleDraftLimit))} дней</span>
+                  </div>
+                )}
+              </div>
+
+              <div className="grid grid-cols-3 gap-2">
+                {[140, 210, 350].map((value) => (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => setScheduleDraftLimit(value)}
+                    className={`rounded-lg border px-3 py-2 text-xs transition-colors ${
+                      scheduleDraftLimit === value
+                        ? "border-accent bg-accent/15 text-accent-light"
+                        : "border-border bg-bg text-text-secondary hover:border-accent/40"
+                    }`}
+                  >
+                    {value}/нед
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-3 border-t border-border px-5 py-4">
+              <button
+                type="button"
+                onClick={() => setScheduleModalOpen(false)}
+                className="px-4 py-2 rounded-lg text-sm text-text-secondary hover:bg-surface transition-colors"
+              >
+                Отмена
+              </button>
+              <button
+                type="button"
+                onClick={saveScheduleModal}
+                className="px-5 py-2 rounded-lg bg-accent text-bg text-sm font-medium hover:bg-accent-hover transition-colors"
+              >
+                Сохранить план
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <PreFlightModal
         open={preflightOpen}
