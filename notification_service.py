@@ -39,8 +39,16 @@ def _connect_postgres():
         return None
 
 
-def _load_profile(user_id: str) -> Optional[dict]:
-    if not user_id:
+def _load_profile(identifier: str) -> Optional[dict]:
+    """Load Telegram settings by Supabase user_id or GREEN-API id.
+
+    Browser requests normally pass ``X-User-Id`` with the Supabase UUID,
+    but long-running Flask operations also have the GREEN-API instance id
+    available as their audit ``user_id``. Looking up both makes completion
+    notifications reliable even when the browser did not send ``X-User-Id``
+    or an older client version is still cached.
+    """
+    if not identifier:
         return None
     conn = _connect_postgres()
     if conn is None:
@@ -52,16 +60,16 @@ def _load_profile(user_id: str) -> Optional[dict]:
             cur.execute(
                 """SELECT telegram_bot_token, telegram_chat_id
                      FROM profiles
-                    WHERE user_id = %s
+                    WHERE user_id::text = %s OR green_api_id = %s
                     LIMIT 1""",
-                (user_id,),
+                (identifier, identifier),
             )
             row = cur.fetchone()
             return dict(row) if row else None
     except Exception:
         logger.warning(
-            "Telegram notifications: cannot load profile for user_id=%s",
-            user_id,
+            "Telegram notifications: cannot load profile for identifier=%s",
+            identifier,
             exc_info=True,
         )
         return None
@@ -72,23 +80,26 @@ def _load_profile(user_id: str) -> Optional[dict]:
             pass
 
 
-def send_telegram_notification(user_id: str | None, title: str, message: str) -> bool:
+def send_telegram_notification(identifier: str | None, title: str, message: str) -> bool:
     """Send a best-effort Telegram notification for a Flask operation.
 
     Returns True when Telegram accepted the request. All configuration and
     network failures are logged and returned as False, never raised, because
     notifications must not break broadcasts or checks.
     """
-    if not user_id:
+    if not identifier:
+        logger.info("Telegram notifications: skipped, no profile identifier")
         return False
 
-    profile = _load_profile(user_id)
+    profile = _load_profile(identifier)
     if not profile:
+        logger.info("Telegram notifications: skipped, profile not found for identifier=%s", identifier)
         return False
 
     encrypted_token = profile.get("telegram_bot_token")
     chat_id = profile.get("telegram_chat_id")
     if not encrypted_token or not chat_id:
+        logger.info("Telegram notifications: skipped, Telegram is not configured for identifier=%s", identifier)
         return False
 
     try:

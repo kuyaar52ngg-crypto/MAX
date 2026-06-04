@@ -514,7 +514,7 @@ def api_check_contact():
     notification_user_id = _resolve_notification_user_id()
     exist, chat_id = current_bot().check_contact(phone)
     send_telegram_notification(
-        notification_user_id,
+        notification_user_id or _resolve_user_id(),
         "Проверка номера завершена",
         f"Номер: {phone}\nСтатус: {'найден' if exist else 'не найден'}"
         + (f"\nchatId: {chat_id}" if chat_id else ""),
@@ -834,7 +834,7 @@ def api_broadcast():
             'rate_limiter': rate_limiter,
             'config': config,
             'bot_instance': request_bot,
-            'notification_user_id': notification_user_id,
+            'notification_user_id': notification_user_id or user_id,
         },
         name=f'broadcast-worker-{run_id}',
         daemon=True,
@@ -1762,6 +1762,7 @@ def api_check_contacts_bulk():
                 'weekly_limit': weekly_limit,
                 'daily_limit': daily_limit,
                 'schedule_plan': schedule_plan,
+                'notification_user_id': notification_user_id or user_id,
             },
         },
     )
@@ -1795,7 +1796,7 @@ def api_check_contacts_bulk():
             'bot_instance': request_bot,
             'auto_schedule_daily': auto_schedule_daily,
             'daily_limit': daily_limit,
-            'notification_user_id': notification_user_id,
+            'notification_user_id': notification_user_id or user_id,
         },
         name=f'check-worker-{run_id}',
         daemon=True,
@@ -2446,7 +2447,11 @@ def api_bulk_operation_resume():
                 'start_index': start_index,
                 'auto_schedule_daily': bool(params.get('auto_schedule_daily')),
                 'daily_limit': params.get('daily_limit'),
-                'notification_user_id': _resolve_notification_user_id(),
+                'notification_user_id': (
+                    _resolve_notification_user_id()
+                    or params.get('notification_user_id')
+                    or user_id
+                ),
             },
             name=f'check-worker-{run_id}-resume',
             daemon=True,
