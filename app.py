@@ -1921,6 +1921,16 @@ def _run_check_worker(
                     'daily_limit': effective_daily_limit,
                     'next_start_at': next_start_at,
                 })
+                send_telegram_notification(
+                    notification_user_id,
+                    "Дневная порция проверки завершена",
+                    (
+                        f"Проверено сегодня: {effective_daily_limit}\n"
+                        f"Всего проверено: {processed}/{total}\n"
+                        f"Продолжение: {next_start_at}\n"
+                        f"ID операции: {run_id}"
+                    ),
+                )
                 logger.info(
                     "check worker %s: daily limit %s reached, waiting until %s",
                     run_id, effective_daily_limit, next_start_at,

@@ -23,6 +23,48 @@ from scheduling.notification_dispatcher import (
 
 TELEGRAM_API_BASE = "https://api.telegram.org"
 HTTP_TIMEOUT_SECONDS = 10
+RELAY_SECRET_HEADER = "X-Notification-Relay-Secret"
+
+
+def _frontend_url() -> str | None:
+    value = (os.getenv("FRONTEND_URL") or os.getenv("NEXT_PUBLIC_APP_URL") or "").strip()
+    if not value:
+        return None
+    return value.rstrip("/")
+
+
+def _send_via_next_relay(identifier: str, title: str, message: str) -> bool:
+    """Fallback delivery through Next.js, which always has Prisma access."""
+    frontend_url = _frontend_url()
+    relay_secret = os.getenv("NOTIFICATION_RELAY_SECRET")
+    if not frontend_url or not relay_secret:
+        logger.info(
+            "Telegram notifications: relay skipped, FRONTEND_URL or NOTIFICATION_RELAY_SECRET is missing",
+        )
+        return False
+
+    try:
+        response = requests.post(
+            f"{frontend_url}/api/notifications/telegram-relay",
+            headers={RELAY_SECRET_HEADER: relay_secret},
+            json={
+                "identifier": identifier,
+                "title": title,
+                "message": message,
+            },
+            timeout=HTTP_TIMEOUT_SECONDS,
+        )
+        if 200 <= response.status_code < 300:
+            return True
+        logger.warning(
+            "Telegram notifications: relay failed status=%s body=%s",
+            response.status_code,
+            response.text[:300],
+        )
+        return False
+    except Exception:
+        logger.warning("Telegram notifications: relay request failed", exc_info=True)
+        return False
 
 
 def _connect_postgres():
@@ -83,6 +125,11 @@ def _load_profile(identifier: str) -> Optional[dict]:
 def send_telegram_notification(identifier: str | None, title: str, message: str) -> bool:
     """Send a best-effort Telegram notification for a Flask operation.
 
+    Delivery is attempted in two ways:
+    1. direct Postgres profile lookup from Flask, useful for monolith/local runs;
+    2. Next.js relay fallback, useful when Flask does not have DATABASE_URL but
+       Next.js/Prisma does.
+
     Returns True when Telegram accepted the request. All configuration and
     network failures are logged and returned as False, never raised, because
     notifications must not break broadcasts or checks.
@@ -92,45 +139,55 @@ def send_telegram_notification(identifier: str | None, title: str, message: str)
         return False
 
     profile = _load_profile(identifier)
-    if not profile:
-        logger.info("Telegram notifications: skipped, profile not found for identifier=%s", identifier)
-        return False
-
-    encrypted_token = profile.get("telegram_bot_token")
-    chat_id = profile.get("telegram_chat_id")
-    if not encrypted_token or not chat_id:
-        logger.info("Telegram notifications: skipped, Telegram is not configured for identifier=%s", identifier)
-        return False
-
-    try:
-        token = decrypt_aes_gcm(str(encrypted_token))
-    except EncryptionKeyMissingError:
-        logger.warning("Telegram notifications: INSTANCE_ENCRYPTION_KEY is not configured")
-        return False
-    except EncryptionKeyInvalidError:
-        logger.warning("Telegram notifications: token decrypt failed", exc_info=True)
-        return False
-
-    text = f"{title}\n\n{message}".strip()
-    url = f"{TELEGRAM_API_BASE}/bot{token}/sendMessage"
-    try:
-        response = requests.post(
-            url,
-            json={
-                "chat_id": str(chat_id),
-                "text": text[:4096],
-                "disable_web_page_preview": True,
-            },
-            timeout=HTTP_TIMEOUT_SECONDS,
+    if profile:
+        encrypted_token = profile.get("telegram_bot_token")
+        chat_id = profile.get("telegram_chat_id")
+        if encrypted_token and chat_id:
+            try:
+                token = decrypt_aes_gcm(str(encrypted_token))
+            except EncryptionKeyMissingError:
+                logger.warning(
+                    "Telegram notifications: INSTANCE_ENCRYPTION_KEY is not configured in Flask; trying relay",
+                )
+            except EncryptionKeyInvalidError:
+                logger.warning(
+                    "Telegram notifications: token decrypt failed in Flask; trying relay",
+                    exc_info=True,
+                )
+            else:
+                text = f"{title}\n\n{message}".strip()
+                url = f"{TELEGRAM_API_BASE}/bot{token}/sendMessage"
+                try:
+                    response = requests.post(
+                        url,
+                        json={
+                            "chat_id": str(chat_id),
+                            "text": text[:4096],
+                            "disable_web_page_preview": True,
+                        },
+                        timeout=HTTP_TIMEOUT_SECONDS,
+                    )
+                    if 200 <= response.status_code < 300:
+                        return True
+                    logger.warning(
+                        "Telegram notifications: sendMessage failed status=%s body=%s; trying relay",
+                        response.status_code,
+                        response.text[:300],
+                    )
+                except Exception:
+                    logger.warning(
+                        "Telegram notifications: sendMessage request failed; trying relay",
+                        exc_info=True,
+                    )
+        else:
+            logger.info(
+                "Telegram notifications: Telegram is not configured for identifier=%s; trying relay",
+                identifier,
+            )
+    else:
+        logger.info(
+            "Telegram notifications: profile not found for identifier=%s in Flask DB; trying relay",
+            identifier,
         )
-        if 200 <= response.status_code < 300:
-            return True
-        logger.warning(
-            "Telegram notifications: sendMessage failed status=%s body=%s",
-            response.status_code,
-            response.text[:300],
-        )
-        return False
-    except Exception:
-        logger.warning("Telegram notifications: sendMessage request failed", exc_info=True)
-        return False
+
+    return _send_via_next_relay(identifier, title, message)
