@@ -261,6 +261,53 @@ export default function BroadcastPage() {
    * plus every known field of the contact (phone, name and any extra CSV
    * columns) so the model can personalize the message.
    */
+  function sleep(ms: number, signal: AbortSignal): Promise<void> {
+    return new Promise((resolve, reject) => {
+      if (signal.aborted) {
+        reject(new DOMException("Aborted", "AbortError"));
+        return;
+      }
+      const timer = window.setTimeout(resolve, ms);
+      signal.addEventListener(
+        "abort",
+        () => {
+          window.clearTimeout(timer);
+          reject(new DOMException("Aborted", "AbortError"));
+        },
+        { once: true },
+      );
+    });
+  }
+
+  function isTooManyConcurrentRequests(error: unknown): boolean {
+    const messageText = error instanceof Error ? error.message : String(error);
+    return /too many concurrent|concurrent requests|rate limit|429/i.test(messageText);
+  }
+
+  async function requestAiTextWithRetry(
+    prompt: string,
+    signal: AbortSignal,
+    systemPrompt: string,
+  ): Promise<string> {
+    const maxAttempts = 6;
+    let lastError: unknown = null;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        return await requestAiText(prompt, signal, systemPrompt);
+      } catch (error) {
+        if (signal.aborted) throw error;
+        lastError = error;
+        const retryable = isTooManyConcurrentRequests(error) || attempt < 3;
+        if (!retryable || attempt === maxAttempts) break;
+        const baseDelay = isTooManyConcurrentRequests(error) ? 2500 : 1000;
+        await sleep(baseDelay * attempt, signal);
+      }
+    }
+    throw lastError instanceof Error
+      ? lastError
+      : new Error("Не удалось сгенерировать текст");
+  }
+
   function buildPerContactPrompt(
     brief: string,
     contact: BroadcastContact,
@@ -368,31 +415,44 @@ export default function BroadcastPage() {
         return;
       }
 
-      // Branch B — recipients present: per-recipient текст параллельно.
+      // Branch B: recipients present. Generate strictly one by one, so the
+      // upstream AI provider receives only one request at a time. This avoids
+      // "too many concurrent requests" and keeps going until every recipient
+      // has its own message or a non-recoverable error remains after retries.
       const systemPrompt = buildMarketerSystemPrompt(message, tone);
-      const settled = await Promise.allSettled(
-        contacts.map((contact, index) =>
-          requestAiText(
+      const map: Record<string, string> = {};
+      const failures: string[] = [];
+      setPersonalizedMessages({});
+
+      for (const [index, contact] of contacts.entries()) {
+        if (ctrl.signal.aborted) return;
+        setAiError(
+          `AI пишет сообщение ${index + 1} из ${contacts.length} для ${contact.phone}...`,
+        );
+        try {
+          const text = await requestAiTextWithRetry(
             buildPerContactPrompt(message, contact, index, contacts.length),
             ctrl.signal,
             systemPrompt,
-          ).then((text) => ({ phone: contact.phone, text: text.trim() })),
-        ),
-      );
+          );
+          const trimmed = text.trim();
+          if (trimmed) {
+            map[contact.phone] = trimmed;
+            setPersonalizedMessages({ ...map });
+            if (Object.keys(map).length === 1) {
+              setMessage(trimmed);
+            }
+          } else {
+            failures.push(`${contact.phone}: пустой ответ AI`);
+          }
+        } catch (error) {
+          if (ctrl.signal.aborted) return;
+          const reason = error instanceof Error ? error.message : "ошибка генерации";
+          failures.push(`${contact.phone}: ${reason}`);
+        }
 
-      if (ctrl.signal.aborted) return;
-
-      const map: Record<string, string> = {};
-      const failures: string[] = [];
-      for (const result of settled) {
-        if (result.status === "fulfilled" && result.value.text) {
-          map[result.value.phone] = result.value.text;
-        } else if (result.status === "rejected") {
-          const reason =
-            result.reason instanceof Error
-              ? result.reason.message
-              : "ошибка генерации";
-          failures.push(reason);
+        if (index < contacts.length - 1) {
+          await sleep(700, ctrl.signal);
         }
       }
 
@@ -402,16 +462,12 @@ export default function BroadcastPage() {
         return;
       }
 
-      setPersonalizedMessages(map);
-      const firstPhone = contacts.find((c) => map[c.phone])?.phone;
-      if (firstPhone) {
-        setMessage(map[firstPhone]);
-      }
-
       if (failures.length > 0) {
         setAiError(
-          `Сгенерировано ${Object.keys(map).length} из ${contacts.length}. Часть запросов не удалась: ${failures[0]}`,
+          `Сгенерировано ${Object.keys(map).length} из ${contacts.length}. Ошибка: ${failures[0]}`,
         );
+      } else {
+        setAiError(null);
       }
     } catch (err: unknown) {
       const isAbort =

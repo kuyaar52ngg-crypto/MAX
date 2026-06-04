@@ -369,14 +369,14 @@ export function EnhancedScheduleModal({
   return (
     <>
       <div
-        className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm"
+        className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm p-3"
         onClick={onClose}
       >
         <div
           onClick={(e) => e.stopPropagation()}
-          className="w-full max-w-3xl mx-4 max-h-[92vh] overflow-y-auto rounded-2xl bg-bg border border-border shadow-2xl"
+          className="w-full max-w-5xl max-h-[92vh] overflow-hidden rounded-2xl bg-bg border border-border shadow-2xl flex flex-col"
         >
-          <div className="sticky top-0 bg-bg/95 backdrop-blur-xl border-b border-border p-5 flex items-center justify-between">
+          <div className="shrink-0 bg-bg/95 backdrop-blur-xl border-b border-border p-5 flex items-center justify-between">
             <div className="flex items-center gap-3">
               <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent/15 text-accent">
                 <CalendarClock className="h-5 w-5" strokeWidth={2} />
@@ -400,7 +400,7 @@ export function EnhancedScheduleModal({
             </button>
           </div>
 
-          <div className="p-5 space-y-5">
+          <div className="p-5 space-y-5 overflow-y-auto flex-1 min-h-0">
             <div>
               <label className="block text-xs text-text-muted mb-1">
                 Название (необязательно)
@@ -414,7 +414,7 @@ export function EnhancedScheduleModal({
               />
             </div>
 
-            <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
               {TABS.map((t) => {
                 const Icon = t.icon;
                 const isActive = tab === t.id;
@@ -423,7 +423,7 @@ export function EnhancedScheduleModal({
                     key={t.id}
                     type="button"
                     onClick={() => setTab(t.id)}
-                    className={`flex flex-col items-start gap-1 rounded-xl border p-3 text-left transition-all relative ${
+                    className={`flex min-h-[78px] flex-col items-start gap-1 rounded-xl border p-2.5 text-left transition-all relative ${
                       isActive
                         ? "border-accent bg-accent-subtle ring-1 ring-accent/40"
                         : "border-border bg-surface hover:border-border-focus"
@@ -441,11 +441,11 @@ export function EnhancedScheduleModal({
                         }`}
                         strokeWidth={2}
                       />
-                      <span className="text-sm font-medium text-text">
+                      <span className="text-xs font-semibold text-text">
                         {t.label}
                       </span>
                     </div>
-                    <span className="text-xs text-text-muted">{t.desc}</span>
+                    <span className="text-[11px] leading-snug text-text-muted">{t.desc}</span>
                   </button>
                 );
               })}
@@ -811,7 +811,7 @@ export function EnhancedScheduleModal({
             )}
           </div>
 
-          <div className="sticky bottom-0 bg-bg/95 backdrop-blur-xl border-t border-border p-4 flex justify-end gap-2">
+          <div className="shrink-0 bg-bg/95 backdrop-blur-xl border-t border-border p-4 flex justify-end gap-2">
             <button
               type="button"
               onClick={onClose}
