@@ -46,25 +46,34 @@ function weeklyToDailyLimit(weeklyLimit: number): number {
 }
 
 function buildCheckSubmissionPlan(total: number, weeklyLimit: number): string {
-  if (total <= 0) return "Нет номеров для подачи";
+  const rows = buildCheckPlanRows(total, weeklyLimit, 7);
+  if (rows.length === 0) return "Нет номеров для подачи";
+  const parts = rows.map((row) => `${row.label}: ${row.count}`);
+  const planned = rows.reduce((sum, row) => sum + row.count, 0);
+  const remaining = Math.max(0, total - planned);
+  if (remaining > 0) parts.push(`ещё ${remaining} позже`);
+  return parts.join(", ");
+}
+
+function buildCheckPlanRows(total: number, weeklyLimit: number, maxRows = 14) {
+  if (total <= 0) return [];
   const formatter = new Intl.DateTimeFormat("ru-RU", {
     weekday: "long",
     day: "2-digit",
     month: "2-digit",
   });
-  const chunks: string[] = [];
+  const rows: Array<{ label: string; count: number; remainingAfter: number }> = [];
   const dailyLimit = weeklyToDailyLimit(weeklyLimit);
   let remaining = total;
   const date = new Date();
-  while (remaining > 0 && chunks.length < 7) {
+  while (remaining > 0 && rows.length < maxRows) {
     const count = Math.min(dailyLimit, remaining);
-    const label = chunks.length === 0 ? "сегодня" : formatter.format(date);
-    chunks.push(`${label}: ${count}`);
+    const label = rows.length === 0 ? "сегодня" : formatter.format(date);
     remaining -= count;
+    rows.push({ label, count, remainingAfter: remaining });
     date.setDate(date.getDate() + 1);
   }
-  if (remaining > 0) chunks.push(`ещё ${remaining} позже`);
-  return chunks.join(", ");
+  return rows;
 }
 
 export default function ContactsPage() {
@@ -266,6 +275,11 @@ export default function ContactsPage() {
   const estimatedPlanDays = pendingMassCount > 0
     ? Math.ceil(pendingMassCount / dailyCheckLimit)
     : 0;
+  const scheduleDraftDailyLimit = weeklyToDailyLimit(scheduleDraftLimit);
+  const scheduleDraftPlanDays = pendingMassCount > 0
+    ? Math.ceil(pendingMassCount / scheduleDraftDailyLimit)
+    : 0;
+  const scheduleDraftRows = buildCheckPlanRows(pendingMassCount, scheduleDraftLimit, 10);
 
   function openScheduleModal() {
     setScheduleDraftLimit(checkWeeklyLimit);
@@ -366,20 +380,20 @@ export default function ContactsPage() {
         <div className="rounded-xl border border-accent/25 bg-accent/10 px-4 py-3 text-xs text-text-secondary space-y-3">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <strong className="text-text">Автоподача включена:</strong>{" "}
-              загрузите хоть 3000 номеров, система будет подавать их по выбранному недельному плану.
+              <strong className="text-text">Планирование проверки:</strong>{" "}
+              очередь проверяется порциями по выбранному недельному лимиту.
             </div>
             <button
               type="button"
               onClick={openScheduleModal}
               disabled={bulkOp.active}
-              className="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-accent text-bg text-xs font-medium hover:bg-accent-hover transition-colors disabled:opacity-50"
+              className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-accent text-bg text-sm font-semibold hover:bg-accent-hover transition-colors disabled:opacity-50"
             >
               <CalendarClock className="h-4 w-4" strokeWidth={2} aria-hidden="true" />
-              Настроить план
+              Планирование
             </button>
           </div>
-          <div className="grid gap-2 sm:grid-cols-3">
+          <div className="grid gap-2 sm:grid-cols-4">
             <div className="rounded-lg bg-bg/70 border border-border/70 px-3 py-2">
               <div className="text-text-muted">В неделю</div>
               <div className="text-text font-semibold">{checkWeeklyLimit}</div>
@@ -389,16 +403,37 @@ export default function ContactsPage() {
               <div className="text-text font-semibold">≈ {dailyCheckLimit}</div>
             </div>
             <div className="rounded-lg bg-bg/70 border border-border/70 px-3 py-2">
-              <div className="text-text-muted">Очередь</div>
+              <div className="text-text-muted">В очереди</div>
               <div className="text-text font-semibold">{pendingMassCount}</div>
             </div>
+            <div className="rounded-lg bg-bg/70 border border-border/70 px-3 py-2">
+              <div className="text-text-muted">Срок</div>
+              <div className="text-text font-semibold">{estimatedPlanDays || 0} дн.</div>
+            </div>
           </div>
-          {pendingMassCount > 0 && (
-            <span className="block">
-              План: {buildCheckSubmissionPlan(pendingMassCount, checkWeeklyLimit)}
-              {estimatedPlanDays > 7 ? `, всего примерно ${estimatedPlanDays} дней` : ""}
-            </span>
-          )}
+        </div>
+
+        <div className="space-y-2">
+          <label className="block text-xs font-medium text-text-muted">Вводите номера</label>
+          <div className="flex gap-2 rounded-xl bg-bg/50 border border-border px-3 py-2 focus-within:border-accent/50 transition-colors">
+            <input
+              type="text"
+              value={massInput}
+              onChange={(e) => setMassInput(e.target.value)}
+              onKeyDown={handleMassKeyDown}
+              placeholder="Вводите номера, затем Enter или запятая"
+              disabled={bulkOp.active}
+              className="flex-1 min-w-0 bg-transparent text-sm text-text placeholder:text-text-muted outline-none disabled:opacity-50"
+            />
+            <button
+              type="button"
+              onClick={() => addMassPhone(massInput)}
+              disabled={!massInput.trim() || bulkOp.active}
+              className="px-3 py-1.5 rounded-lg bg-surface border border-border text-xs text-text-secondary hover:border-accent/40 transition-colors disabled:opacity-40"
+            >
+              Добавить
+            </button>
+          </div>
         </div>
 
         <div className="rounded-xl bg-bg/50 border border-border overflow-hidden">
@@ -408,9 +443,9 @@ export default function ContactsPage() {
             className="w-full flex items-center justify-between gap-3 px-4 py-3 text-left hover:bg-surface/60 transition-colors"
           >
             <span>
-              <span className="block text-sm font-medium text-text">Список номеров</span>
+              <span className="block text-sm font-medium text-text">Загруженные номера</span>
               <span className="block text-xs text-text-muted">
-                Загружено: {massPhones.length}. {isAccordionOpen ? "Нажмите, чтобы свернуть список." : "Список свернут, чтобы страница не растягивалась."}
+                Всего: {massPhones.length}. {isAccordionOpen ? "Список раскрыт со скроллом." : "Список свернут, чтобы не мешал вводу."}
               </span>
             </span>
             <ChevronDown
@@ -420,40 +455,35 @@ export default function ContactsPage() {
             />
           </button>
           <div className={`border-t border-border p-3 ${isAccordionOpen ? "max-h-72 overflow-y-auto" : ""}`}>
-            <div className="flex flex-wrap gap-2 min-h-[40px]">
-              {visibleMassPhones.map((p, i) => (
-                <span key={`${p}-${i}`} className="inline-flex items-center gap-1 px-2.5 py-1 bg-accent/15 border border-accent/20 rounded-lg text-xs text-accent-light">
-                  {p}
+            {massPhones.length === 0 ? (
+              <div className="text-xs text-text-muted py-2">Номера ещё не добавлены. Ввод находится выше, CSV можно загрузить ниже.</div>
+            ) : (
+              <div className="flex flex-wrap gap-2 min-h-[40px]">
+                {visibleMassPhones.map((p, i) => (
+                  <span key={`${p}-${i}`} className="inline-flex items-center gap-1 px-2.5 py-1 bg-accent/15 border border-accent/20 rounded-lg text-xs text-accent-light">
+                    {p}
+                    <button
+                      type="button"
+                      onClick={() => setMassPhones((ph) => ph.filter((_, idx) => idx !== i))}
+                      disabled={bulkOp.active}
+                      className="hover:text-error transition-colors disabled:opacity-40"
+                      aria-label={`Удалить номер ${p}`}
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))}
+                {!isAccordionOpen && hiddenMassPhonesCount > 0 && (
                   <button
                     type="button"
-                    onClick={() => setMassPhones((ph) => ph.filter((_, idx) => idx !== i))}
-                    disabled={bulkOp.active}
-                    className="hover:text-error transition-colors disabled:opacity-40"
-                    aria-label={`Удалить номер ${p}`}
+                    onClick={() => setIsAccordionOpen(true)}
+                    className="px-2.5 py-1 rounded-lg text-xs bg-surface border border-border text-text-secondary hover:border-accent/40 transition-colors"
                   >
-                    ×
+                    ещё {hiddenMassPhonesCount}
                   </button>
-                </span>
-              ))}
-              {!isAccordionOpen && hiddenMassPhonesCount > 0 && (
-                <button
-                  type="button"
-                  onClick={() => setIsAccordionOpen(true)}
-                  className="px-2.5 py-1 rounded-lg text-xs bg-surface border border-border text-text-secondary hover:border-accent/40 transition-colors"
-                >
-                  ещё {hiddenMassPhonesCount}
-                </button>
-              )}
-              <input
-                type="text"
-                value={massInput}
-                onChange={(e) => setMassInput(e.target.value)}
-                onKeyDown={handleMassKeyDown}
-                placeholder={massPhones.length ? "Добавить номер..." : "Вводите номера (Enter или запятая)..."}
-                disabled={bulkOp.active}
-                className="flex-1 min-w-[200px] bg-transparent text-sm text-text placeholder:text-text-muted outline-none disabled:opacity-50"
-              />
-            </div>
+                )}
+              </div>
+            )}
           </div>
         </div>
         <div className="flex justify-between items-center">
@@ -561,14 +591,15 @@ export default function ContactsPage() {
           aria-modal="true"
           aria-labelledby="check-schedule-title"
         >
-          <div className="w-full max-w-md rounded-2xl border border-border bg-bg-elevated shadow-2xl">
+          <div className="w-full max-w-2xl rounded-2xl border border-border bg-bg-elevated shadow-2xl overflow-hidden">
             <div className="flex items-start justify-between gap-4 border-b border-border px-5 py-4">
               <div>
-                <h3 id="check-schedule-title" className="text-base font-semibold text-text">
-                  Планирование проверки номеров
+                <h3 id="check-schedule-title" className="text-base font-semibold text-text flex items-center gap-2">
+                  <CalendarClock className="h-5 w-5 text-accent" strokeWidth={2} aria-hidden="true" />
+                  Подробное планирование проверки
                 </h3>
                 <p className="mt-1 text-xs text-text-muted">
-                  Выберите сколько номеров проверять в неделю. Система сама распределит очередь по дням.
+                  Настройте недельный объём. Большой список останется в очереди, а проверка будет идти по дневным порциям.
                 </p>
               </div>
               <button
@@ -581,47 +612,91 @@ export default function ContactsPage() {
               </button>
             </div>
 
-            <div className="space-y-4 px-5 py-4">
-              <div>
-                <label className="block text-sm font-medium text-text mb-2">
-                  Номеров в неделю
-                </label>
-                <input
-                  type="number"
-                  min={1}
-                  max={100000}
-                  value={scheduleDraftLimit}
-                  onChange={(e) => setScheduleDraftLimit(Math.max(1, Number(e.target.value) || DEFAULT_WEEKLY_CHECK_LIMIT))}
-                  className="w-full px-3 py-2 bg-bg border border-border rounded-lg text-sm text-text focus:outline-none focus:border-accent/50 font-mono"
-                  autoFocus
-                />
+            <div className="max-h-[70vh] overflow-y-auto px-5 py-4 space-y-5">
+              <div className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
+                <div>
+                  <label className="block text-sm font-medium text-text mb-2">
+                    Сколько номеров проверять в неделю
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={100000}
+                    value={scheduleDraftLimit}
+                    onChange={(e) => setScheduleDraftLimit(Math.max(1, Number(e.target.value) || DEFAULT_WEEKLY_CHECK_LIMIT))}
+                    className="w-full px-3 py-2.5 bg-bg border border-border rounded-xl text-sm text-text focus:outline-none focus:border-accent/50 font-mono"
+                    autoFocus
+                  />
+                </div>
+                <div className="rounded-xl border border-accent/25 bg-accent/10 px-4 py-3 text-sm text-text-secondary">
+                  <div className="text-xs text-text-muted">Получится в день</div>
+                  <div className="text-xl font-semibold text-text">≈ {scheduleDraftDailyLimit}</div>
+                </div>
               </div>
 
-              <div className="rounded-xl border border-border bg-bg px-4 py-3 text-sm text-text-secondary space-y-1">
-                <div>В день: <span className="font-semibold text-text">≈ {weeklyToDailyLimit(scheduleDraftLimit)}</span></div>
-                <div>Очередь сейчас: <span className="font-semibold text-text">{pendingMassCount}</span></div>
-                {pendingMassCount > 0 && (
-                  <div>
-                    Длительность: <span className="font-semibold text-text">примерно {Math.ceil(pendingMassCount / weeklyToDailyLimit(scheduleDraftLimit))} дней</span>
+              <div>
+                <div className="text-xs font-medium text-text-muted mb-2">Быстрый выбор</div>
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                  {[140, 210, 350, 700].map((value) => (
+                    <button
+                      key={value}
+                      type="button"
+                      onClick={() => setScheduleDraftLimit(value)}
+                      className={`rounded-xl border px-3 py-3 text-left transition-colors ${
+                        scheduleDraftLimit === value
+                          ? "border-accent bg-accent/15 text-accent-light"
+                          : "border-border bg-bg text-text-secondary hover:border-accent/40"
+                      }`}
+                    >
+                      <span className="block text-sm font-semibold">{value}/нед</span>
+                      <span className="block text-xs opacity-80">≈ {weeklyToDailyLimit(value)}/день</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-3">
+                <div className="rounded-xl border border-border bg-bg px-4 py-3">
+                  <div className="text-xs text-text-muted">Номеров в очереди</div>
+                  <div className="text-lg font-semibold text-text">{pendingMassCount}</div>
+                </div>
+                <div className="rounded-xl border border-border bg-bg px-4 py-3">
+                  <div className="text-xs text-text-muted">Дневная порция</div>
+                  <div className="text-lg font-semibold text-text">{scheduleDraftDailyLimit}</div>
+                </div>
+                <div className="rounded-xl border border-border bg-bg px-4 py-3">
+                  <div className="text-xs text-text-muted">Примерный срок</div>
+                  <div className="text-lg font-semibold text-text">{scheduleDraftPlanDays || 0} дней</div>
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-warning/25 bg-warning-bg px-4 py-3 text-xs text-warning space-y-1">
+                <strong className="block text-sm">Антибан-подсказка</strong>
+                <p>140 в неделю это примерно 20 в день. Для свежих или слабых аккаунтов лучше не увеличивать лимит резко.</p>
+              </div>
+
+              <div className="rounded-xl border border-border bg-bg overflow-hidden">
+                <div className="px-4 py-3 border-b border-border text-sm font-medium text-text">
+                  Предпросмотр ближайших дней
+                </div>
+                {scheduleDraftRows.length === 0 ? (
+                  <div className="px-4 py-4 text-sm text-text-muted">Добавьте номера, чтобы увидеть план.</div>
+                ) : (
+                  <div className="divide-y divide-border/70">
+                    {scheduleDraftRows.map((row, index) => (
+                      <div key={`${row.label}-${index}`} className="grid grid-cols-[1fr_auto_auto] gap-3 px-4 py-2.5 text-sm">
+                        <span className="text-text">{row.label}</span>
+                        <span className="font-semibold text-accent-light">{row.count}</span>
+                        <span className="text-xs text-text-muted">останется {row.remainingAfter}</span>
+                      </div>
+                    ))}
+                    {pendingMassCount > scheduleDraftRows.reduce((sum, row) => sum + row.count, 0) && (
+                      <div className="px-4 py-2.5 text-xs text-text-muted">
+                        Остальные дни будут продолжены по той же дневной порции.
+                      </div>
+                    )}
                   </div>
                 )}
-              </div>
-
-              <div className="grid grid-cols-3 gap-2">
-                {[140, 210, 350].map((value) => (
-                  <button
-                    key={value}
-                    type="button"
-                    onClick={() => setScheduleDraftLimit(value)}
-                    className={`rounded-lg border px-3 py-2 text-xs transition-colors ${
-                      scheduleDraftLimit === value
-                        ? "border-accent bg-accent/15 text-accent-light"
-                        : "border-border bg-bg text-text-secondary hover:border-accent/40"
-                    }`}
-                  >
-                    {value}/нед
-                  </button>
-                ))}
               </div>
             </div>
 
